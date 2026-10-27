@@ -63,6 +63,7 @@ class StyleGeneratorTest {
 		$this->test_lcp_skips_non_slide_markup();
 		$this->test_gslider_lcp_optimize_filter();
 		$this->test_ensure_image_dimensions();
+		$this->test_ensure_image_dimensions_edge_cases();
 		$this->test_reset_styles();
 
 		echo "\nAll StyleGenerator unit tests passed successfully!\n";
@@ -719,14 +720,17 @@ class StyleGeneratorTest {
 
 		$attachment_metadata_mock = [
 			42 => [
+				'file'   => '2026/01/photo1.jpg',
 				'width'  => 800,
 				'height' => 600,
 			],
 			43 => [
+				'file'   => '2026/01/photo2.jpg',
 				'width'  => 400,
 				'height' => 300,
 			],
 			44 => [
+				'file'   => '2026/01/photo3.jpg',
 				'width'  => 1200,
 				'height' => 800,
 			],
@@ -775,19 +779,19 @@ class StyleGeneratorTest {
 		$output = $generator->ensure_image_dimensions( $content, $block );
 
 		// Image 1: dimensions injected.
-		if ( ! preg_match( '/<img[^>]*photo1\.jpg[^>]*width="800"[^>]*height="600"/i', $output ) ) {
+		if ( ! preg_match( '/<img(?=[^>]*photo1\.jpg)(?=[^>]*\swidth="800")(?=[^>]*\sheight="600")[^>]*>/i', $output ) ) {
 			fwrite( STDERR, "FAIL: ensure_image_dimensions failed to inject width=\"800\" height=\"600\" on photo1.jpg\n" );
 			exit( 1 );
 		}
 
 		// Image 2: existing dimensions preserved (not overwritten).
-		if ( ! preg_match( '/<img[^>]*photo2\.jpg[^>]*width="500"[^>]*height="400"/i', $output ) ) {
+		if ( ! preg_match( '/<img(?=[^>]*photo2\.jpg)(?=[^>]*\swidth="500")(?=[^>]*\sheight="400")[^>]*>/i', $output ) ) {
 			fwrite( STDERR, "FAIL: ensure_image_dimensions failed to preserve existing width=\"500\" height=\"400\" on photo2.jpg\n" );
 			exit( 1 );
 		}
 
 		// Image 3: dimensions injected.
-		if ( ! preg_match( '/<img[^>]*photo3\.jpg[^>]*width="1200"[^>]*height="800"/i', $output ) ) {
+		if ( ! preg_match( '/<img(?=[^>]*photo3\.jpg)(?=[^>]*\swidth="1200")(?=[^>]*\sheight="800")[^>]*>/i', $output ) ) {
 			fwrite( STDERR, "FAIL: ensure_image_dimensions failed to inject width=\"1200\" height=\"800\" on photo3.jpg\n" );
 			exit( 1 );
 		}
@@ -819,6 +823,89 @@ class StyleGeneratorTest {
 			exit( 1 );
 		}
 		echo "OK: ensure_image_dimensions bypasses in feed context\n";
+	}
+
+	/**
+	 * Verify ensure_image_dimensions edge cases: intermediate sizes, data-* attributes,
+	 * non-slide images and same-basename images from another folder.
+	 *
+	 * @return void
+	 */
+	public function test_ensure_image_dimensions_edge_cases(): void {
+		global $is_admin_mock, $is_feed_mock, $attachment_metadata_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+
+		$attachment_metadata_mock = [
+			50 => [
+				'file'   => '2026/02/hero.jpg',
+				'width'  => 2000,
+				'height' => 1000,
+				'sizes'  => [
+					'medium' => [
+						'file'   => 'hero-300x300.jpg',
+						'width'  => 300,
+						'height' => 300,
+					],
+				],
+			],
+			51 => [
+				'file'   => '2026/02/logo.png',
+				'width'  => 640,
+				'height' => 320,
+			],
+		];
+
+		$generator = StyleGenerator::getInstance();
+		$block     = [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [
+				'blockId' => 'gslider-img-edge',
+				'images'  => [
+					[
+						'id'  => 50,
+						'url' => 'https://example.com/wp-content/uploads/2026/02/hero-300x300.jpg',
+					],
+					[
+						'id'  => 51,
+						'url' => 'https://example.com/wp-content/uploads/2026/02/logo.png',
+					],
+				],
+			],
+		];
+
+		$content = '<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide"><img src="https://example.com/wp-content/uploads/2026/02/hero-300x300.jpg" alt="a > b" /></div>' .
+			'<div class="swiper-slide"><img data-width="9" data-height="9" src="https://example.com/wp-content/uploads/2026/02/logo.png" alt="Logo"></div>' .
+			'<div class="swiper-slide"><img src="https://example.com/wp-content/plugins/x/logo.png" class="nav-icon" alt="Nav"></div>' .
+			'</div></div>';
+
+		$output = $generator->ensure_image_dimensions( $content, $block );
+
+		if ( ! preg_match( '/<img(?=[^>]*hero-300x300\.jpg)(?=[^>]*\swidth="300")(?=[^>]*\sheight="300")/i', $output ) ) {
+			fwrite( STDERR, "FAIL: intermediate size did not get its own 300x300 dimensions\n" );
+			exit( 1 );
+		}
+		if ( false !== strpos( $output, 'width="2000"' ) ) {
+			fwrite( STDERR, "FAIL: full-size dimensions were injected on an intermediate size\n" );
+			exit( 1 );
+		}
+		if ( ! preg_match( '/<img(?=[^>]*uploads\/2026\/02\/logo\.png)(?=[^>]*\swidth="640")(?=[^>]*\sheight="320")(?=[^>]*data-width="9")/i', $output ) ) {
+			fwrite( STDERR, "FAIL: data-width/data-height blocked real width/height injection\n" );
+			exit( 1 );
+		}
+		if ( 1 !== substr_count( $output, 'width="640"' ) ) {
+			fwrite( STDERR, "FAIL: same-basename image from another folder got slide dimensions\n" );
+			exit( 1 );
+		}
+
+		$outside = '<div class="gslider-nav"><img src="https://example.com/wp-content/uploads/2026/02/logo.png" alt="x"></div>';
+		if ( $outside !== $generator->ensure_image_dimensions( $outside, $block ) ) {
+			fwrite( STDERR, "FAIL: image outside .swiper-slide was modified\n" );
+			exit( 1 );
+		}
+
+		echo "OK: ensure_image_dimensions handles sizes, data-* attributes and non-slide images\n";
 	}
 
 	/**

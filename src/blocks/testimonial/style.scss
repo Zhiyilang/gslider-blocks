@@ -123,3 +123,11 @@
 		}
 	}
 }
+
+@media (prefers-reduced-motion: reduce) {
+
+	.gslider-testimonial-wrapper .gslider-testimonial-quote-icon-wrapper,
+	.gslider-testimonial-wrapper .gslider-testimonial-quote-icon-wrapper svg {
+		transition: none !important;
+	}
+}
