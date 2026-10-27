@@ -456,8 +456,8 @@ class DashboardControllerTest {
 		$response = $controller->save_settings( $request );
 		$data     = $response->get_data();
 
-		if ( 'file' !== $data['settings']['css_delivery'] ) {
-			fwrite( STDERR, "FAIL: save_settings() did not update css_delivery to 'file'\n" );
+		if ( 'file' !== ( $data['settings']['css_delivery'] ?? null ) ) {
+			fwrite( STDERR, "FAIL: save_settings() expected css_delivery 'file', got: " . var_export( $data['settings']['css_delivery'] ?? null, true ) . "\n" );
 			exit( 1 );
 		}
 		echo "OK: save_settings() updates css_delivery to 'file'\n";
@@ -465,7 +465,7 @@ class DashboardControllerTest {
 		// 4. System report accurately reflects external generated stylesheet when file mode is active.
 		$report_file = $controller->generate_system_report();
 		if ( false === strpos( $report_file['formatted_text'], '- Dynamic CSS Delivery: External Generated Stylesheet (uploads/gslider-styles/)' ) ) {
-			fwrite( STDERR, "FAIL: System report does not show external stylesheet label when file delivery enabled\n" );
+			fwrite( STDERR, "FAIL: System report expected external stylesheet label, got: " . substr( $report_file['formatted_text'] ?? '', 0, 100 ) . "\n" );
 			exit( 1 );
 		}
 		echo "OK: System report displays external generated stylesheet label when file delivery enabled\n";

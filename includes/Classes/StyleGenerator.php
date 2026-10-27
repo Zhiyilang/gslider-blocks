@@ -120,7 +120,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          * fallback to being enqueued during render_block, which classic themes output in wp_footer.
          * Block themes (FSE) handle header style printing natively across all template parts.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @return void
          */
@@ -165,7 +165,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          * Resolves inner blocks and core/block (synced patterns) to ensure sliders embedded
          * within synced patterns are also pre-enqueued into <head> on classic themes.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @param array<int, array<string, mixed>> $blocks Parsed blocks array.
          * @param array<int, bool>                 $visited_refs Visited synced pattern post IDs for recursion protection.
@@ -195,7 +195,12 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
                     if ( $ref_id > 0 && empty( $visited_refs[ $ref_id ] ) && function_exists( 'get_post' ) && function_exists( 'parse_blocks' ) ) {
                         $visited_refs[ $ref_id ] = true;
                         $ref_post = get_post( $ref_id );
-                        if ( $ref_post && ! empty( $ref_post->post_content ) && is_string( $ref_post->post_content ) ) {
+                        if ( $ref_post
+                            && ( ! function_exists( 'post_password_required' ) || ! post_password_required( $ref_post ) )
+                            && ( ! isset( $ref_post->post_status ) || 'publish' === $ref_post->post_status )
+                            && ( ! isset( $ref_post->post_type ) || 'wp_block' === $ref_post->post_type )
+                            && ! empty( $ref_post->post_content )
+                            && is_string( $ref_post->post_content ) ) {
                             if ( false !== strpos( $ref_post->post_content, '<!-- wp:gslider-blocks/' )
                                 || false !== strpos( $ref_post->post_content, '<!-- wp:block ' ) ) {
                                 $ref_blocks = parse_blocks( $ref_post->post_content );
@@ -826,7 +831,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          * style="" attributes (such as the star rating width percentage in Testimonial blocks) still requires
          * 'style-src-attr' (e.g. 'unsafe-inline' or attribute hash) unless rewritten.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @return string The sanitized CSP nonce string, or empty string if not set.
          */
@@ -850,7 +855,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          *
          * Can be overridden via constant GSLIDER_DYNAMIC_CSS_FILE_CACHE or filter 'gslider_enable_file_cache'.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @return bool True if file caching is enabled.
          */
@@ -881,7 +886,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          * cached HTML from full-page caching plugins or CDN edge caches. Old files are retained until an
          * administrator explicitly triggers a cache purge via the "Clear CSS cache" tool in the dashboard.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @param string $block_id    Block unique identifier.
          * @param string $clean_style Sanitized CSS rules.
@@ -921,7 +926,10 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
 
             if ( ! file_exists( $file_path ) ) {
                 $written = @file_put_contents( $file_path, $clean_style );
-                if ( false === $written ) {
+                if ( false === $written || $written < strlen( $clean_style ) ) {
+                    if ( file_exists( $file_path ) ) {
+                        @unlink( $file_path );
+                    }
                     return false;
                 }
             }

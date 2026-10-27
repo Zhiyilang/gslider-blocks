@@ -1121,6 +1121,56 @@ class StyleGeneratorTest {
 		echo "OK: Dynamic <style> tag falls back cleanly to 'wp_csp_nonce' compatibility filter\n";
 
 		remove_all_filters( 'wp_csp_nonce' );
+
+		// Case 3: Malicious nonce payload is sanitized and HTML-escaped in both output paths.
+		add_filter( 'gslider_style_nonce', function() {
+			return 'bad-nonce" onload="alert(1)" <script>alert(2)</script>';
+		} );
+
+		StyleGenerator::reset_styles();
+		$block_id_3 = 'gslider-csp-block-3';
+		$block_3    = [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [
+				'blockId'    => $block_id_3,
+				'blockStyle' => ".{$block_id_3} { opacity: 0.5; }",
+			],
+		];
+		$output_3   = $generator->collect_and_render_dynamic_styles( $content, $block_3 );
+
+		if ( false !== strpos( $output_3, '<script' ) || false !== strpos( $output_3, '" onload=' ) ) {
+			fwrite( STDERR, "FAIL: Malicious CSP nonce was not safely contained in inline style tag: $output_3\n" );
+			exit( 1 );
+		}
+		if ( false === strpos( $output_3, 'nonce="bad-nonce&quot; onload=&quot;alert(1)&quot; alert(2)"' ) ) {
+			fwrite( STDERR, "FAIL: Expected escaped nonce attribute not found in inline style tag: $output_3\n" );
+			exit( 1 );
+		}
+		echo "OK: Malicious CSP nonce is safely contained and escaped in inline <style> tag\n";
+
+		// Verify footer output path also sanitizes and escapes malicious nonce.
+		StyleGenerator::reset_styles();
+		$ref_styles = new ReflectionProperty( StyleGenerator::class, 'styles' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$ref_styles->setAccessible( true );
+		}
+		$ref_styles->setValue( null, [ 'footer-csp-block' => '.footer-csp-block { color: red; }' ] );
+
+		ob_start();
+		$generator->print_footer_styles();
+		$footer_output = ob_get_clean();
+
+		if ( false !== strpos( $footer_output, '<script' ) || false !== strpos( $footer_output, '" onload=' ) ) {
+			fwrite( STDERR, "FAIL: Malicious CSP nonce was not safely contained in footer style tag: $footer_output\n" );
+			exit( 1 );
+		}
+		if ( false === strpos( $footer_output, 'nonce="bad-nonce&quot; onload=&quot;alert(1)&quot; alert(2)"' ) ) {
+			fwrite( STDERR, "FAIL: Expected escaped nonce attribute not found in footer style tag: $footer_output\n" );
+			exit( 1 );
+		}
+		echo "OK: Malicious CSP nonce is safely contained and escaped in footer <style> tag\n";
+
+		remove_all_filters( 'gslider_style_nonce' );
 	}
 
 
@@ -1257,32 +1307,36 @@ class StyleGeneratorTest {
 		$generator->clear_dynamic_css_cache();
 
 		// 1. Missing option defaults to false (inline mode).
-		if ( true === $generator->is_file_cache_enabled() ) {
-			fwrite( STDERR, "FAIL: is_file_cache_enabled() should default to false when option is missing\n" );
+		$enabled = $generator->is_file_cache_enabled();
+		if ( true === $enabled ) {
+			fwrite( STDERR, "FAIL: is_file_cache_enabled() expected false when option is missing, got: " . var_export( $enabled, true ) . "\n" );
 			exit( 1 );
 		}
 		echo "OK: Missing gslider_settings defaults is_file_cache_enabled to false (inline mode)\n";
 
 		// 2. Explicit 'inline' setting returns false.
 		update_option( 'gslider_settings', [ 'css_delivery' => 'inline' ] );
-		if ( true === $generator->is_file_cache_enabled() ) {
-			fwrite( STDERR, "FAIL: is_file_cache_enabled() returned true for css_delivery => inline\n" );
+		$enabled = $generator->is_file_cache_enabled();
+		if ( true === $enabled ) {
+			fwrite( STDERR, "FAIL: is_file_cache_enabled() expected false for css_delivery => inline, got: " . var_export( $enabled, true ) . "\n" );
 			exit( 1 );
 		}
 		echo "OK: Explicit css_delivery => inline sets is_file_cache_enabled to false\n";
 
 		// 3. Explicit 'file' setting returns true.
 		update_option( 'gslider_settings', [ 'css_delivery' => 'file' ] );
-		if ( false === $generator->is_file_cache_enabled() ) {
-			fwrite( STDERR, "FAIL: is_file_cache_enabled() returned false for css_delivery => file\n" );
+		$enabled = $generator->is_file_cache_enabled();
+		if ( false === $enabled ) {
+			fwrite( STDERR, "FAIL: is_file_cache_enabled() expected true for css_delivery => file, got: " . var_export( $enabled, true ) . "\n" );
 			exit( 1 );
 		}
 		echo "OK: Explicit css_delivery => file sets is_file_cache_enabled to true\n";
 
 		// 4. Filter overrides option.
 		add_filter( 'gslider_enable_file_cache', '__return_false' );
-		if ( true === $generator->is_file_cache_enabled() ) {
-			fwrite( STDERR, "FAIL: gslider_enable_file_cache filter did not override option\n" );
+		$enabled = $generator->is_file_cache_enabled();
+		if ( true === $enabled ) {
+			fwrite( STDERR, "FAIL: gslider_enable_file_cache filter expected false, got: " . var_export( $enabled, true ) . "\n" );
 			exit( 1 );
 		}
 		echo "OK: gslider_enable_file_cache filter overrides option\n";
@@ -1305,7 +1359,7 @@ class StyleGeneratorTest {
 
 		$files_v1 = glob( $cache_dir . '/gslider-' . $block_id . '-*.css' );
 		if ( empty( $files_v1 ) || ! file_exists( $files_v1[0] ) ) {
-			fwrite( STDERR, "FAIL: File for version 1 was not written\n" );
+			fwrite( STDERR, "FAIL: File for version 1 was not written, glob matched: " . json_encode( $files_v1 ) . "\n" );
 			exit( 1 );
 		}
 		$file_v1 = $files_v1[0];
@@ -1323,7 +1377,7 @@ class StyleGeneratorTest {
 
 		$files_v2 = glob( $cache_dir . '/gslider-' . $block_id . '-*.css' );
 		if ( empty( $files_v2 ) || count( $files_v2 ) < 2 ) {
-			fwrite( STDERR, "FAIL: File for version 2 was not written alongside version 1\n" );
+			fwrite( STDERR, "FAIL: File for version 2 was not written alongside version 1, expected >= 2, got: " . count( $files_v2 ) . "\n" );
 			exit( 1 );
 		}
 
@@ -1337,12 +1391,12 @@ class StyleGeneratorTest {
 		// 6. Purge tool cleans all files.
 		$purged = $generator->clear_dynamic_css_cache();
 		if ( $purged < 2 ) {
-			fwrite( STDERR, "FAIL: clear_dynamic_css_cache() did not purge both retained files (purged: $purged)\n" );
+			fwrite( STDERR, "FAIL: clear_dynamic_css_cache() expected >= 2 purged files, got: $purged\n" );
 			exit( 1 );
 		}
 		$files_after = glob( $cache_dir . '/gslider-' . $block_id . '-*.css' );
 		if ( ! empty( $files_after ) ) {
-			fwrite( STDERR, "FAIL: Retained files still exist after clear_dynamic_css_cache\n" );
+			fwrite( STDERR, "FAIL: Retained files still exist after clear_dynamic_css_cache: " . json_encode( $files_after ) . "\n" );
 			exit( 1 );
 		}
 		echo "OK: clear_dynamic_css_cache() successfully purges all retained versions\n";
@@ -1394,7 +1448,6 @@ class StyleGeneratorTest {
 		$generator->clear_dynamic_css_cache();
 		$enqueued_styles = [];
 
-		// Post containing only the synced pattern ref and GSlider block marker.
 		// Real-world shape: post containing only the synced pattern ref without any wrapping GSlider comment.
 		$wp_post_content = '<!-- wp:block {"ref":42} /-->';
 		$generator->pre_collect_queried_post_styles();
@@ -1404,6 +1457,26 @@ class StyleGeneratorTest {
 			exit( 1 );
 		}
 		echo "OK: Classic theme pre-collection resolves core/block synced patterns and enqueues stylesheets\n";
+
+		// Verify draft or non-wp_block synced patterns are skipped like core render_block_core_block().
+		$draft_post               = new WP_Post();
+		$draft_post->ID           = 43;
+		$draft_post->post_status  = 'draft';
+		$draft_post->post_type    = 'wp_block';
+		$draft_post->post_title   = 'Draft Synced Pattern';
+		$draft_post->post_content = '<!-- wp:gslider-blocks/image-slider {"blockId":"slider-draft43"} /-->';
+		$wp_mock_posts[43]        = $draft_post;
+
+		$enqueued_styles = [];
+		$wp_post_content = '<!-- wp:block {"ref":43} /-->';
+		$generator->pre_collect_queried_post_styles();
+
+		if ( ! empty( $enqueued_styles['gslider-style-slider-draft43'] ) ) {
+			fwrite( STDERR, "FAIL: Pre-collection should skip non-published synced patterns\n" );
+			exit( 1 );
+		}
+		echo "OK: Pre-collection skips non-published synced patterns\n";
+		unset( $wp_mock_posts[43] );
 
 		unset( $wp_mock_posts[42] );
 		$generator->clear_dynamic_css_cache();
