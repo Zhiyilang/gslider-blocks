@@ -319,7 +319,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          * Ensures explicit width and height HTML attributes on slide images to eliminate CLS (#391).
          *
          * Uses WP_HTML_Tag_Processor (no regex) and only touches <img> tags inside
-         * .swiper-slide whose src points to the same file as a block image/logo item.
+         * .swiper-slide whose src points to the same file as a block image/logo/author item.
          * Dimensions come from the attachment size that matches the URL (full or an
          * intermediate size), so cropped sizes keep their real aspect ratio.
          *
@@ -347,6 +347,18 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
                 $items = $block['attrs']['images'];
             } elseif ( ! empty( $block['attrs']['logos'] ) && is_array( $block['attrs']['logos'] ) ) {
                 $items = $block['attrs']['logos'];
+            } elseif ( ! empty( $block['attrs']['sliderItems'] ) && is_array( $block['attrs']['sliderItems'] ) ) {
+                foreach ( $block['attrs']['sliderItems'] as $slide ) {
+                    if ( ! empty( $slide['authorImage'] ) && is_array( $slide['authorImage'] ) ) {
+                        $items[] = $slide['authorImage'];
+                    }
+                }
+                if ( ! empty( $block['attrs']['quoteImageUrl'] ) && ! empty( $block['attrs']['quoteImageID'] ) ) {
+                    $items[] = [
+                        'id'  => $block['attrs']['quoteImageID'],
+                        'url' => $block['attrs']['quoteImageUrl'],
+                    ];
+                }
             }
 
             // Map normalized URL path => attachment ID.

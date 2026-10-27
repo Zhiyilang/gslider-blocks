@@ -64,6 +64,7 @@ class StyleGeneratorTest {
 		$this->test_gslider_lcp_optimize_filter();
 		$this->test_ensure_image_dimensions();
 		$this->test_ensure_image_dimensions_edge_cases();
+		$this->test_ensure_image_dimensions_testimonial_author_image();
 		$this->test_reset_styles();
 
 		echo "\nAll StyleGenerator unit tests passed successfully!\n";
@@ -910,7 +911,76 @@ class StyleGeneratorTest {
 	}
 
 	/**
-	 * Test 10: Verify reset_styles() cleans all internal state.
+	 * Verify ensure_image_dimensions injects dimensions on testimonial author and quote images.
+	 *
+	 * @return void
+	 */
+	public function test_ensure_image_dimensions_testimonial_author_image(): void {
+		global $is_admin_mock, $is_feed_mock, $attachment_metadata_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+
+		$attachment_metadata_mock = [
+			60 => [
+				'file'   => '2026/02/author.jpg',
+				'width'  => 400,
+				'height' => 400,
+			],
+			61 => [
+				'file'   => '2026/02/quote-mark.png',
+				'width'  => 80,
+				'height' => 80,
+			],
+		];
+
+		$generator = StyleGenerator::getInstance();
+		$block     = [
+			'blockName' => 'gslider-blocks/testimonial',
+			'attrs'     => [
+				'blockId'       => 'gslider-test-author',
+				'quoteImageID'  => 61,
+				'quoteImageUrl' => 'https://example.com/wp-content/uploads/2026/02/quote-mark.png',
+				'sliderItems'   => [
+					[
+						'authorName'  => 'Jane Doe',
+						'authorImage' => [
+							'id'  => 60,
+							'url' => 'https://example.com/wp-content/uploads/2026/02/author.jpg',
+						],
+					],
+				],
+			],
+		];
+
+		$content = '<div class="wp-block-gslider-blocks-testimonial gslider-testimonial-wrapper">' .
+			'<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide">' .
+			'<div class="gslider-testimonial-quote-icon-wrapper">' .
+			'<img src="https://example.com/wp-content/uploads/2026/02/quote-mark.png" alt="Quote" />' .
+			'</div>' .
+			'<div class="gslider-testimonial-author-image-wrapper">' .
+			'<img src="https://example.com/wp-content/uploads/2026/02/author.jpg" alt="Jane" class="gslider-testimonial-author-image" />' .
+			'</div>' .
+			'</div>' .
+			'</div></div></div>';
+
+		$output = $generator->ensure_image_dimensions( $content, $block );
+
+		if ( ! preg_match( '/<img(?=[^>]*author\.jpg)(?=[^>]*\swidth="400")(?=[^>]*\sheight="400")[^>]*>/i', $output ) ) {
+			fwrite( STDERR, "FAIL: Testimonial author image did not receive injected width=\"400\" height=\"400\". Expected dimensions on author.jpg. Actual: $output\n" );
+			exit( 1 );
+		}
+
+		if ( ! preg_match( '/<img(?=[^>]*quote-mark\.png)(?=[^>]*\swidth="80")(?=[^>]*\sheight="80")[^>]*>/i', $output ) ) {
+			fwrite( STDERR, "FAIL: Testimonial quote image did not receive injected width=\"80\" height=\"80\". Expected dimensions on quote-mark.png. Actual: $output\n" );
+			exit( 1 );
+		}
+
+		echo "OK: ensure_image_dimensions injects dimensions on testimonial author and quote images\n";
+	}
+
+	/**
+	 * Test 11: Verify reset_styles() cleans all internal state.
 	 *
 	 * @return void
 	 */
