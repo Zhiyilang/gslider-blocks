@@ -1,0 +1,99 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+
+tone_instructions: |
+  Keep reviews concise, objective, and technically actionable. Strictly zero generic filler praise.
+  Strictly enforce the 12 Golden Architectural Rules defined in AGENTS.md.
+  Validate whether every contribution is atomic, surgical, and adheres strictly to its linked GitHub issue.
+
+reviews:
+  profile: "assertive"
+  poem: false
+  high_level_summary: true
+  collapse_walkthrough: false
+  review_status: false
+
+  # Cross-reference the linked issue and verify scope compliance
+  assess_linked_issues: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+
+  # Ignore compiled artifacts and minified vendor files from line-by-line review
+  path_filters:
+    - "!build/**"
+    - "!dist/**"
+    - "!vendor/**"
+    - "!node_modules/**"
+    - "!packages/*/dist/**"
+    - "!packages/*/node_modules/**"
+    - "!**/*.min.*"
+    - "!**/*.bundle.js"
+    - "!**/*.asset.php"
+
+  path_instructions:
+    # 1. Global: Scope, surgical diff, issue alignment, and conventional commits
+    - path: "**/*"
+      instructions: |
+        - Scope & Surgical Diff (Rule 9): Cross-reference the linked issue (Closes #<id> / Fixes #<id>). Flag any changes that go beyond what was specifically requested in the issue (no speculative boilerplate, no unrelated refactoring, and no accidental commits carried over from other branches).
+        - Conventional Commits: Check that PR title and commits follow Conventional Commits format (`feat:`, `fix:`, `refactor:`, `style:`, etc.).
+        - Code Formatting: Ensure JavaScript, SCSS, and PHP follow WordPress Prettier/Stylelint rules (verify multi-line indentation so CI linting passes without line-length violations).
+
+    # 2. Protected Component Directory (Rule 8)
+    - path: "src/components/**"
+      instructions: |
+        CRITICAL ARCHITECTURAL POLICY (Rule 8): `src/components/` is STRICTLY LOCKED to protect 2,000+ live sites.
+        Only plugin author @noruzzamans is authorized to modify or add files in `src/components/`.
+        Contributors are welcome to contribute anywhere else, but ANY PR from an external contributor touching `src/components/` must be IMMEDIATELY FLAGGED as a strict policy violation.
+
+    # 3. Block Development, Swiper Engine, and Build Verification
+    - path: "src/blocks/**/*.{js,jsx}"
+      instructions: |
+        - Swiper Lifecycle (Rule 6): Swiper instances initialized in `useEffect` must have a proper cleanup function returning `swiper.destroy(true, true)` to prevent memory leaks in the Gutenberg editor canvas.
+        - Dynamic Styling Pipeline (Rule 3): Never write hardcoded inline styles in `save.js`. Dynamic styles must be generated via `styling.js`, stored into `blockStyle`, and output through `StyleGenerator.php`.
+        - Responsive Architecture (Rule 5): All visual and layout controls must support responsive objects: `{ Desktop, Tablet, Mobile }`.
+        - Design System Controls (Rule 8): Blocks must exclusively use approved `@Components/*` controls. Raw `@wordpress/components` input controls inside block inspectors are forbidden.
+        - Build Verification:
+          * If `styling.js` is changed: verify whether the MCP build was run (check if `packages/mcp-server/dist/` is included in the commit). If not, remind author: "Please run `npm run mcp:build` and commit the updated bundle."
+          * If `attributes.js` is changed: verify whether REST defaults were generated (check if `includes/RestApi/defaults/` is included in the commit). If not, remind author: "Please run `npm run defaults:generate`." Also verify if `deprecated.js` migration is needed to prevent live block invalidation.
+
+    # 4. Block Attributes Schema Standards
+    - path: "src/blocks/**/attributes.js"
+      instructions: |
+        - Spacing Attributes: Must follow the standardized 8-key pattern (`<prefix>PaddingUnits`, `<prefix>PaddingDesktop`, `<prefix>PaddingDesktopCssStyle`, `<prefix>PaddingTablet`, `<prefix>PaddingTabletCssStyle`, `<prefix>PaddingMobile`, `<prefix>PaddingMobileCssStyle`, `<prefix>PaddingLink`).
+        - Typography Attributes: Must follow the standardized 13-key schema.
+        - Mandatory Block Defaults: Verify that required defaults exist: `blockId`, `deviceType`, `blockStyle`, `globalID`, `globalClass`, `globalCustomCSS`, `zIndex`.
+
+    # 5. WordPress PHP Backend Standards & Security
+    - path: "includes/**/*.php"
+      instructions: |
+        - Architecture: Strictly enforce PSR-4 autoloading (`GSlider\` -> `includes/`) and SingletonTrait pattern.
+        - WordPress Security (Rule 7):
+          * All user/request input must be sanitized contextually (`sanitize_text_field`, `sanitize_key`, `absint`).
+          * All HTML/attribute output must be strictly escaped (`esc_html__`, `esc_attr__`, `esc_url`, `wp_kses`).
+          * Verify nonces and capability checks (`current_user_can`) on all administrative and mutation actions.
+          * Use `WP_Filesystem` for direct disk operations.
+        - REST API: Endpoints in `includes/RestApi/` must define strict `permission_callback`, arguments schema, and sanitize callbacks.
+        - Testing: If modifying core logic, verify that zero-dependency PHP unit tests in `tests/` are updated or pass cleanly.
+
+    # 6. Block Patterns & GDPR Compliance
+    - path: "patterns/**/*.php"
+      instructions: |
+        - GDPR Compliance: NEVER hotlink external third-party images. Bundled patterns must strictly use local vector SVGs from `assets/images/patterns/`.
+        - Escaping: Use `esc_url_raw()` inside Gutenberg block delimiter comments (`<!-- wp:... -->`) and `esc_url()` in HTML tag attributes (`<img src="...">`).
+        - Localization: All bundled patterns must have an explicit entry in `RegistrationPatterns::get_pattern_translations()` with literal strings for `title`, `description`, and `keywords` for `make-pot` compatibility.
+
+    # 7. Admin Styles & Centralized Design Tokens
+    - path: "admin/scss/**/*.scss"
+      instructions: |
+        - Design Tokens (Rule 10): Never hardcode raw hex color codes or font families directly in dashboard SCSS.
+        - All dashboard tokens must be imported from `admin/scss/dashboard/_variables.scss` (`@use 'variables' as *;`).
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - ".agents/skills/**/SKILL.md"
