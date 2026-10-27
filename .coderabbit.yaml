@@ -29,6 +29,8 @@ reviews:
     - "!node_modules/**"
     - "!packages/*/dist/**"
     - "!packages/*/node_modules/**"
+    - "!packages/mcp-server/src/core/schemas/**"
+    - "!includes/RestApi/defaults/**"
     - "!assets/admin/css/**"
     - "!assets/admin/js/**"
     - "!**/*.min.*"
@@ -58,17 +60,33 @@ reviews:
         - Design System Controls (Rule 8): Blocks must exclusively use approved `@Components/*` controls. Raw `@wordpress/components` input controls inside block inspectors are forbidden.
         - Build Verification:
           * If block source files are changed: remind the author to run `npm run build` and commit the updated `build/` output.
-          * If MCP bundle inputs (`styling.js`, `attributes.js`, `save.js`, `deprecated.js`, `block.json`) are changed: remind the author to run `npm run mcp:build` and commit the bundle. Do not judge whether `packages/mcp-server/dist/` was committed (it is path-filtered); the "Block Build & MCP Drift Check" CI job is the source of truth.
-          * If `attributes.js` is changed: remind the author to run `npm run defaults:generate` and commit any updated defaults in `includes/RestApi/defaults/`. Also verify if a `deprecated.js` migration is needed to prevent live block invalidation.
+          * If MCP build inputs (`styling.js`, `attributes.js`, `save.js`, `deprecated.js`, `block.json`, `preset.js`, `inspector.js`) are changed: remind the author to run `npm run mcp:build` and commit the bundle and schemas. Do not judge whether `packages/mcp-server/dist/` was committed (it is path-filtered); the "Block Build & MCP Drift Check" CI job is the source of truth.
+          * If `attributes.js` is changed: remind the author to run `npm run defaults:generate` and commit any updated defaults in `includes/RestApi/defaults/`. Also verify if a `deprecated.js` migration is needed to prevent live block invalidation, and run `npm run mcp:test` to verify zero schema drift.
 
-    # 4. Block Attributes Schema Standards
+    # 4. Block Styles and Metadata Build Verification
+    - path: "src/blocks/**/style.scss"
+      instructions: |
+        - Build Verification: Remind the author to run `npm run build` and commit the updated `build/` output.
+
+    - path: "src/blocks/**/block.json"
+      instructions: |
+        - Build Verification:
+          * Remind the author to run `npm run build` and commit the updated `build/` output.
+          * Remind the author to run `npm run mcp:build` and commit the bundle.
+
+    # 5. Global Constants & Shared Schemas
+    - path: "src/constants/**/*.js"
+      instructions: |
+        - If `src/constants/index.js` is changed: remind the author to run `npm run mcp:build` and commit the updated MCP schemas. Shared option lists feed the generated block schemas.
+
+    # 6. Block Attributes Schema Standards
     - path: "src/blocks/**/attributes.js"
       instructions: |
         - Spacing Attributes: Must follow the standardized 8-key pattern (`<prefix>PaddingUnits`, `<prefix>PaddingDesktop`, `<prefix>PaddingDesktopCssStyle`, `<prefix>PaddingTablet`, `<prefix>PaddingTabletCssStyle`, `<prefix>PaddingMobile`, `<prefix>PaddingMobileCssStyle`, `<prefix>PaddingLink`).
         - Typography Attributes: Must follow the standardized 13-key schema.
         - Mandatory Block Defaults: Verify that required defaults exist: `blockId`, `deviceType`, `blockStyle`, `globalID`, `globalClass`, `globalCustomCSS`, `zIndex`.
 
-    # 5. WordPress PHP Backend Standards & Security
+    # 7. WordPress PHP Backend Standards & Security
     - path: "includes/**/*.php"
       instructions: |
         - Architecture: Strictly enforce PSR-4 autoloading (`GSlider\` -> `includes/`) and SingletonTrait pattern.
@@ -80,14 +98,14 @@ reviews:
         - REST API: Endpoints in `includes/RestApi/` must define strict `permission_callback`, arguments schema, and sanitize callbacks.
         - Testing: If modifying core logic, verify that zero-dependency PHP unit tests in `tests/` are updated or pass cleanly.
 
-    # 6. Block Patterns & GDPR Compliance
+    # 8. Block Patterns & GDPR Compliance
     - path: "patterns/**/*.php"
       instructions: |
         - GDPR Compliance: NEVER hotlink external third-party images. Bundled patterns must strictly use local vector SVGs from `assets/images/patterns/`.
         - Escaping: Use `esc_url_raw()` inside Gutenberg block delimiter comments (`<!-- wp:... -->`) and `esc_url()` in HTML tag attributes (`<img src="...">`).
         - Localization: All bundled patterns must have an explicit entry in `RegistrationPatterns::get_pattern_translations()` with literal strings for `title`, `description`, and `keywords` for `make-pot` compatibility.
 
-    # 7. Admin Styles & Centralized Design Tokens
+    # 9. Admin Styles & Centralized Design Tokens
     - path: "admin/scss/**/*.scss"
       instructions: |
         - Design Tokens (Rule 10): Never hardcode raw hex color codes or font families directly in dashboard SCSS.
