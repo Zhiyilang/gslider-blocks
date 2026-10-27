@@ -42,6 +42,8 @@ class RegistrationBlocksTest {
 	public function run_all_tests(): void {
 		echo "=== GSlider RegistrationBlocks Unit Tests ===\n\n";
 
+		self::setup_mock_build_blocks();
+
 		$this->test_implements_registrable_and_singleton();
 		$this->test_plugin_services_contains_class();
 		$this->test_register_hooks();
@@ -50,6 +52,36 @@ class RegistrationBlocksTest {
 		$this->test_swiper_dependency_not_duplicated();
 
 		echo "\nAll RegistrationBlocks unit tests passed successfully!\n";
+	}
+
+	/**
+	 * Set up mock build/blocks directory if not already present.
+	 *
+	 * On CI PHP compatibility matrix jobs, npm build has not run,
+	 * so build/blocks is created on demand for block registration tests.
+	 *
+	 * @return void
+	 */
+	public static function setup_mock_build_blocks(): void {
+		$plugin_dir = defined( 'GSLIDER_DIR_PATH' ) ? GSLIDER_DIR_PATH : dirname( __DIR__, 2 ) . '/';
+		$build_dir  = trailingslashit( $plugin_dir ) . 'build/blocks/';
+		$slugs      = [ 'base', 'flexi-content', 'image-slider', 'logo-carousel', 'testimonial' ];
+
+		foreach ( $slugs as $slug ) {
+			$block_dir = $build_dir . $slug . '/';
+			if ( ! is_dir( $block_dir ) ) {
+				mkdir( $block_dir, 0777, true );
+			}
+			$json_file = $block_dir . 'block.json';
+			if ( ! file_exists( $json_file ) ) {
+				$src_json = trailingslashit( $plugin_dir ) . "src/blocks/{$slug}/block.json";
+				if ( file_exists( $src_json ) ) {
+					copy( $src_json, $json_file );
+				} else {
+					file_put_contents( $json_file, json_encode( [ 'name' => "gslider-blocks/{$slug}" ] ) );
+				}
+			}
+		}
 	}
 
 	/**
