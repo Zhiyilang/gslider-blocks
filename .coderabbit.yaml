@@ -3,9 +3,9 @@ language: "en-US"
 early_access: false
 
 tone_instructions: |
-  Keep reviews concise, objective, and technically actionable. Strictly zero generic filler praise.
-  Strictly enforce the 12 Golden Architectural Rules defined in AGENTS.md.
-  Validate whether every contribution is atomic, surgical, and adheres strictly to its linked GitHub issue.
+  Be concise, objective and actionable; no filler praise.
+  Enforce the 12 Golden Architectural Rules in AGENTS.md.
+  Check that each PR is atomic, surgical and scoped to its linked issue.
 
 reviews:
   profile: "assertive"
@@ -39,7 +39,6 @@ reviews:
       instructions: |
         - Scope & Surgical Diff (Rule 9): Cross-reference the linked issue (Closes #<id> / Fixes #<id>). Flag any changes that go beyond what was specifically requested in the issue (no speculative boilerplate, no unrelated refactoring, and no accidental commits carried over from other branches).
         - Conventional Commits: Check that PR title and commits follow Conventional Commits format (`feat:`, `fix:`, `refactor:`, `style:`, etc.).
-        - Code Formatting: Ensure JavaScript, SCSS, and PHP follow WordPress Prettier/Stylelint rules (verify multi-line indentation so CI linting passes without line-length violations).
 
     # 2. Protected Component Directory (Rule 8)
     - path: "src/components/**"
@@ -56,8 +55,8 @@ reviews:
         - Responsive Architecture (Rule 5): All visual and layout controls must support responsive objects: `{ Desktop, Tablet, Mobile }`.
         - Design System Controls (Rule 8): Blocks must exclusively use approved `@Components/*` controls. Raw `@wordpress/components` input controls inside block inspectors are forbidden.
         - Build Verification:
-          * If `styling.js` is changed: verify whether the MCP build was run (check if `packages/mcp-server/dist/` is included in the commit). If not, remind author: "Please run `npm run mcp:build` and commit the updated bundle."
-          * If `attributes.js` is changed: verify whether REST defaults were generated (check if `includes/RestApi/defaults/` is included in the commit). If not, remind author: "Please run `npm run defaults:generate`." Also verify if `deprecated.js` migration is needed to prevent live block invalidation.
+          * If `styling.js` is changed: remind the author to run `npm run mcp:build` and commit the bundle. Do not judge whether `packages/mcp-server/dist/` was committed (it is path-filtered); the "Block Build & MCP Drift Check" CI job is the source of truth.
+          * If `attributes.js` is changed: remind the author to run `npm run defaults:generate` and commit any updated defaults in `includes/RestApi/defaults/`. Also verify if a `deprecated.js` migration is needed to prevent live block invalidation.
 
     # 4. Block Attributes Schema Standards
     - path: "src/blocks/**/attributes.js"
