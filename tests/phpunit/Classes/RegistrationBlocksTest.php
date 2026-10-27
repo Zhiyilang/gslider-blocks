@@ -6,9 +6,13 @@
  * 1. RegistrationBlocks implements Registrable interface and SingletonTrait.
  * 2. register() hooks into WordPress 'init'.
  * 3. Plugin services array contains RegistrationBlocks::class.
- * 4. Registered block viewScript handle has 'defer' strategy and Swiper dependency.
- * 5. Swiper dependency is not added if Swiper script is not registered.
- * 6. Swiper dependency is not duplicated if already present.
+ * 4. On the real init order (vendor scripts at init:5, blocks at init:10) every block
+ *    view-script handle gets 'defer' and the Swiper dependency, without enqueue_assets().
+ * 5. register_blocks() registers Swiper itself, even when build/ is missing.
+ * 6. Swiper dependency is not added if Swiper script is not registered.
+ * 7. Swiper dependency is not duplicated if already present.
+ *
+ * Block registration uses temporary fixture block.json files, never the git-ignored build/ folder.
  *
  * @package GSlider\Tests\Classes
  */
@@ -42,12 +46,12 @@ class RegistrationBlocksTest {
 	public function run_all_tests(): void {
 		echo "=== GSlider RegistrationBlocks Unit Tests ===\n\n";
 
-		self::setup_mock_build_blocks();
-
 		$this->test_implements_registrable_and_singleton();
 		$this->test_plugin_services_contains_class();
 		$this->test_register_hooks();
+		$this->test_init_order_registers_swiper_before_blocks();
 		$this->test_view_script_defer_and_swiper_dependency();
+		$this->test_register_blocks_registers_swiper_without_build();
 		$this->test_swiper_dependency_not_added_when_unregistered();
 		$this->test_swiper_dependency_not_duplicated();
 
@@ -55,33 +59,86 @@ class RegistrationBlocksTest {
 	}
 
 	/**
-	 * Set up mock build/blocks directory if not already present.
+	 * Block slugs used as fixtures.
 	 *
-	 * On CI PHP compatibility matrix jobs, npm build has not run,
-	 * so build/blocks is created on demand for block registration tests.
+	 * @var string[]
+	 */
+	private $slugs = [ 'base', 'flexi-content', 'image-slider', 'logo-carousel', 'testimonial' ];
+
+	/**
+	 * Temporary fixture build/blocks directory.
+	 *
+	 * @var string
+	 */
+	private $fixture_dir = '';
+
+	/**
+	 * Creates temporary block.json fixtures outside the plugin folder.
+	 *
+	 * @return string Fixture build/blocks path with trailing slash.
+	 */
+	private function fixture_build_dir(): string {
+		if ( '' !== $this->fixture_dir ) {
+			return $this->fixture_dir;
+		}
+
+		$dir = rtrim( sys_get_temp_dir(), '/' ) . '/gslider-blocks-fixture-' . getmypid() . '/';
+		foreach ( $this->slugs as $slug ) {
+			if ( ! is_dir( $dir . $slug ) ) {
+				mkdir( $dir . $slug, 0777, true );
+			}
+			file_put_contents( $dir . $slug . '/block.json', json_encode( [ 'name' => "gslider-blocks/{$slug}" ] ) );
+		}
+
+		register_shutdown_function(
+			static function () use ( $dir ) {
+				foreach ( glob( $dir . '*/block.json' ) as $file ) {
+					unlink( $file );
+					rmdir( dirname( $file ) );
+				}
+				rmdir( $dir );
+			}
+		);
+
+		$this->fixture_dir = $dir;
+		return $dir;
+	}
+
+	/**
+	 * Resets the mocked script registry.
 	 *
 	 * @return void
 	 */
-	public static function setup_mock_build_blocks(): void {
-		$plugin_dir = defined( 'GSLIDER_DIR_PATH' ) ? GSLIDER_DIR_PATH : dirname( __DIR__, 2 ) . '/';
-		$build_dir  = trailingslashit( $plugin_dir ) . 'build/blocks/';
-		$slugs      = [ 'base', 'flexi-content', 'image-slider', 'logo-carousel', 'testimonial' ];
+	private function reset_scripts(): void {
+		global $wp_scripts, $wp_scripts_obj;
+		$wp_scripts     = [];
+		$wp_scripts_obj = new \WP_Scripts();
+	}
 
-		foreach ( $slugs as $slug ) {
-			$block_dir = $build_dir . $slug . '/';
-			if ( ! is_dir( $block_dir ) ) {
-				mkdir( $block_dir, 0777, true );
-			}
-			$json_file = $block_dir . 'block.json';
-			if ( ! file_exists( $json_file ) ) {
-				$src_json = trailingslashit( $plugin_dir ) . "src/blocks/{$slug}/block.json";
-				if ( file_exists( $src_json ) ) {
-					copy( $src_json, $json_file );
-				} else {
-					file_put_contents( $json_file, json_encode( [ 'name' => "gslider-blocks/{$slug}" ] ) );
-				}
-			}
+	/**
+	 * Calls the private register_single_block() method.
+	 *
+	 * @param string $build_dir Build directory.
+	 * @param string $slug      Block slug.
+	 * @return void
+	 */
+	private function register_single( string $build_dir, string $slug ): void {
+		$method = new \ReflectionMethod( RegistrationBlocks::class, 'register_single_block' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$method->setAccessible( true );
 		}
+		$method->invoke( RegistrationBlocks::getInstance(), $build_dir, $slug );
+	}
+
+	/**
+	 * Fails the test run with a message.
+	 *
+	 * @param string $message Failure message.
+	 * @return void
+	 */
+	private function fail( string $message ): void {
+		fwrite( STDERR, "FAIL: {$message}\n" );
+		exit( 1 );
 	}
 
 	/**
@@ -153,49 +210,71 @@ class RegistrationBlocksTest {
 	}
 
 	/**
-	 * Test 4: Verify registered block view-script handle has 'defer' and has Swiper in deps.
+	 * Test 4: Verify vendor scripts are hooked on init before blocks are registered.
+	 *
+	 * @return void
+	 */
+	public function test_init_order_registers_swiper_before_blocks(): void {
+		global $wp_actions;
+
+		FrontendAssets::getInstance()->register();
+
+		$vendor_priority = null;
+		$blocks_priority = null;
+		foreach ( $wp_actions['init'] ?? [] as $action ) {
+			if ( ! is_array( $action['callback'] ) ) {
+				continue;
+			}
+			if ( $action['callback'][0] instanceof FrontendAssets && 'register_vendor_scripts' === $action['callback'][1] ) {
+				$vendor_priority = $action['priority'];
+			}
+			if ( $action['callback'][0] instanceof RegistrationBlocks && 'register_blocks' === $action['callback'][1] ) {
+				$blocks_priority = $action['priority'];
+			}
+		}
+
+		if ( null === $vendor_priority || null === $blocks_priority || $vendor_priority >= $blocks_priority ) {
+			$this->fail( 'register_vendor_scripts must run on init before register_blocks' );
+		}
+		echo "OK: Vendor scripts register on init:{$vendor_priority}, before blocks on init:{$blocks_priority}\n";
+	}
+
+	/**
+	 * Test 5: Simulate init (vendor scripts, then blocks) and check every view-script handle.
+	 *
+	 * Does not call enqueue_assets() and does not use build/.
 	 *
 	 * @return void
 	 */
 	public function test_view_script_defer_and_swiper_dependency(): void {
-		global $wp_scripts;
+		$this->reset_scripts();
+		$build_dir = $this->fixture_build_dir();
 
-		// 1. Ensure Swiper script is registered.
-		FrontendAssets::getInstance()->enqueue_assets();
+		// init:5.
+		FrontendAssets::getInstance()->register_vendor_scripts();
 
-		if ( ! wp_script_is( 'gslider-blocks-swiper-script', 'registered' ) ) {
-			fwrite( STDERR, "FAIL: Swiper script is not registered before block registration\n" );
-			exit( 1 );
+		// init:10.
+		foreach ( $this->slugs as $slug ) {
+			$this->register_single( $build_dir, $slug );
 		}
 
-		// 2. Trigger block registration.
-		$instance = RegistrationBlocks::getInstance();
-		$instance->register_blocks();
-
 		$scripts = wp_scripts();
-		$slugs   = [ 'base', 'flexi-content', 'image-slider', 'logo-carousel', 'testimonial' ];
-
-		foreach ( $slugs as $slug ) {
+		foreach ( $this->slugs as $slug ) {
 			$handle = "gslider-blocks-{$slug}-view-script";
 
 			if ( ! isset( $scripts->registered[ $handle ] ) ) {
-				fwrite( STDERR, "FAIL: Block view script '{$handle}' is not registered\n" );
-				exit( 1 );
+				$this->fail( "Block view script '{$handle}' is not registered" );
 			}
 
 			$script_obj = $scripts->registered[ $handle ];
-
-			// Check defer strategy.
-			$strategy = $script_obj->extra['strategy'] ?? ( $script_obj->args['strategy'] ?? null );
-			if ( 'defer' !== $strategy ) {
-				fwrite( STDERR, "FAIL: Block view script '{$handle}' does not have strategy => defer\n" );
-				exit( 1 );
+			if ( ( $script_obj->extra['strategy'] ?? null ) !== 'defer' ) {
+				$this->fail( "Block view script '{$handle}' does not have strategy => defer" );
 			}
-
-			// Check Swiper dependency.
 			if ( ! in_array( 'gslider-blocks-swiper-script', $script_obj->deps, true ) ) {
-				fwrite( STDERR, "FAIL: Block view script '{$handle}' does not declare dependency on gslider-blocks-swiper-script\n" );
-				exit( 1 );
+				$this->fail( "Block view script '{$handle}' does not depend on gslider-blocks-swiper-script" );
+			}
+			if ( isset( $scripts->registered[ "gslider-{$slug}-view-script" ] ) ) {
+				$this->fail( "Legacy handle gslider-{$slug}-view-script must not be registered" );
 			}
 
 			echo "OK: View script '{$handle}' has strategy => defer and Swiper in deps\n";
@@ -203,16 +282,34 @@ class RegistrationBlocksTest {
 	}
 
 	/**
-	 * Test 5: Verify Swiper dependency is NOT added if Swiper script is not registered.
+	 * Test 6: register_blocks() registers Swiper first, even when the build folder is missing.
+	 *
+	 * @return void
+	 */
+	public function test_register_blocks_registers_swiper_without_build(): void {
+		$this->reset_scripts();
+
+		RegistrationBlocks::getInstance()->register_blocks();
+
+		if ( ! wp_script_is( 'gslider-blocks-swiper-script', 'registered' ) ) {
+			$this->fail( 'register_blocks() did not register gslider-blocks-swiper-script' );
+		}
+
+		$args = wp_scripts()->registered['gslider-blocks-swiper-script']->args;
+		if ( ! is_array( $args ) || empty( $args['in_footer'] ) || ( $args['strategy'] ?? null ) !== 'defer' ) {
+			$this->fail( 'Swiper registered by register_blocks() is not deferred in the footer' );
+		}
+		echo "OK: register_blocks() registers deferred Swiper before any block\n";
+	}
+
+	/**
+	 * Test 7: Verify Swiper dependency is NOT added if Swiper script is not registered.
 	 *
 	 * @return void
 	 */
 	public function test_swiper_dependency_not_added_when_unregistered(): void {
-		global $wp_scripts, $wp_scripts_obj;
 
-		// Reset scripts.
-		$wp_scripts     = [];
-		$wp_scripts_obj = new \WP_Scripts();
+		$this->reset_scripts();
 
 		// Register block view script without Swiper script registered.
 		$handle = 'gslider-blocks-test-mock-view-script';
@@ -226,8 +323,7 @@ class RegistrationBlocksTest {
 		}
 
 		// Use base block directory.
-		$plugin_dir = defined( 'GSLIDER_DIR_PATH' ) ? GSLIDER_DIR_PATH : dirname( __DIR__, 2 ) . '/';
-		$build_dir  = trailingslashit( $plugin_dir ) . 'build/blocks/';
+		$build_dir = $this->fixture_build_dir();
 
 		$method->invoke( $instance, $build_dir, 'base' );
 
@@ -242,13 +338,13 @@ class RegistrationBlocksTest {
 	}
 
 	/**
-	 * Test 6: Verify Swiper dependency is not duplicated if already present in deps.
+	 * Test 8: Verify Swiper dependency is not duplicated if already present in deps.
 	 *
 	 * @return void
 	 */
 	public function test_swiper_dependency_not_duplicated(): void {
-		// Register Swiper script.
-		FrontendAssets::getInstance()->enqueue_assets();
+		$this->reset_scripts();
+		FrontendAssets::getInstance()->register_vendor_scripts();
 
 		$instance = RegistrationBlocks::getInstance();
 		$method   = new \ReflectionMethod( RegistrationBlocks::class, 'register_single_block' );
@@ -256,8 +352,7 @@ class RegistrationBlocksTest {
 			$method->setAccessible( true );
 		}
 
-		$plugin_dir = defined( 'GSLIDER_DIR_PATH' ) ? GSLIDER_DIR_PATH : dirname( __DIR__, 2 ) . '/';
-		$build_dir  = trailingslashit( $plugin_dir ) . 'build/blocks/';
+		$build_dir = $this->fixture_build_dir();
 
 		// Invoke multiple times.
 		$method->invoke( $instance, $build_dir, 'base' );

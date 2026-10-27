@@ -290,6 +290,9 @@ if ( ! function_exists( 'wp_kses_post' ) ) {
 
 if ( ! function_exists( 'render_block' ) ) {
 	function render_block( $block ) {
+		if ( isset( $GLOBALS['gslider_render_block_impl'] ) && is_callable( $GLOBALS['gslider_render_block_impl'] ) ) {
+			return call_user_func( $GLOBALS['gslider_render_block_impl'], $block );
+		}
 		return '<p>flexi</p>';
 	}
 }
@@ -795,4 +798,34 @@ if ( ! function_exists( 'current_time' ) ) {
 $gslider_autoloader = dirname( __DIR__, 2 ) . '/vendor/autoload.php';
 if ( file_exists( $gslider_autoloader ) ) {
 	require_once $gslider_autoloader;
+}
+
+if ( ! function_exists( 'wp_is_serving_rest_request' ) ) {
+	/**
+	 * Stub for wp_is_serving_rest_request(), controlled via the global $is_rest_mock.
+	 *
+	 * @return bool
+	 */
+	function wp_is_serving_rest_request() {
+		global $is_rest_mock;
+		return ! empty( $is_rest_mock );
+	}
+}
+
+if ( ! function_exists( '_doing_it_wrong' ) ) {
+	/**
+	 * Stub for _doing_it_wrong() used by the bundled HTML API.
+	 *
+	 * @return void
+	 */
+	function _doing_it_wrong( $function_name, $message, $version ) {} // phpcs:ignore
+}
+
+// WordPress 6.3 HTML API (copied verbatim from wordpress-develop 6.3.0, GPLv2+) so
+// StyleGenerator::optimize_lcp_image() is tested against the real WP_HTML_Tag_Processor.
+if ( ! class_exists( 'WP_HTML_Tag_Processor' ) ) {
+	require_once __DIR__ . '/stubs/html-api/class-wp-html-attribute-token.php';
+	require_once __DIR__ . '/stubs/html-api/class-wp-html-span.php';
+	require_once __DIR__ . '/stubs/html-api/class-wp-html-text-replacement.php';
+	require_once __DIR__ . '/stubs/html-api/class-wp-html-tag-processor.php';
 }

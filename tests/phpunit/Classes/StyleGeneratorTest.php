@@ -8,8 +8,11 @@
  * 3. Dynamic styles are sanitized and scoped strictly to block IDs.
  * 4. Duplicate <style> tags are prevented for identical block IDs in the same request (#312).
  * 5. <style> tags are completely excluded from RSS feeds (#312).
- * 6. LCP image optimization prioritizes the first slide image on the frontend (#391).
- * 7. reset_styles() resets collected styles, printed IDs, and optimization state.
+ * 6. Generic REST responses get no <style>, but the plugin's headless render keeps it,
+ *    and JSON-Accept AJAX requests are not treated as REST.
+ * 7. LCP image optimization (WP_HTML_Tag_Processor) prioritizes only the first real slide image,
+ *    skips testimonial rating icons, cannot be abused via attribute values (XSS), and can be disabled.
+ * 8. reset_styles() resets collected styles, printed IDs, and optimization state.
  *
  * @package GSlider\Tests\Classes
  */
@@ -51,7 +54,12 @@ class StyleGeneratorTest {
 		$this->test_dynamic_css_deduplication();
 		$this->test_feed_exclusion();
 		$this->test_rest_request_exclusion();
+		$this->test_json_accept_ajax_keeps_styles();
+		$this->test_headless_render_keeps_styles_in_rest();
 		$this->test_lcp_image_optimization();
+		$this->test_lcp_xss_payload_creates_no_attribute();
+		$this->test_lcp_skips_rating_icon();
+		$this->test_lcp_skips_non_slide_markup();
 		$this->test_gslider_lcp_optimize_filter();
 		$this->test_reset_styles();
 
@@ -262,10 +270,10 @@ class StyleGeneratorTest {
 	 * @return void
 	 */
 	public function test_rest_request_exclusion(): void {
-		global $is_admin_mock, $is_feed_mock, $is_json_mock;
+		global $is_admin_mock, $is_feed_mock, $is_rest_mock;
 		$is_admin_mock = false;
 		$is_feed_mock  = false;
-		$is_json_mock  = true; // Simulate REST / JSON request.
+		$is_rest_mock  = true; // Simulate REST request.
 
 		StyleGenerator::reset_styles();
 		$generator = StyleGenerator::getInstance();
@@ -292,7 +300,89 @@ class StyleGeneratorTest {
 		}
 		echo "OK: Dynamic <style> tags are completely excluded from REST requests\n";
 
+		$is_rest_mock = false;
+	}
+
+	/**
+	 * Verify a front-end AJAX request with a JSON Accept header still gets styles.
+	 *
+	 * @return void
+	 */
+	public function test_json_accept_ajax_keeps_styles(): void {
+		global $is_json_mock, $is_rest_mock;
+		$is_json_mock = true;
+		$is_rest_mock = false;
+
+		StyleGenerator::reset_styles();
+		$block  = [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [
+				'blockId'    => 'gslider-ajax-block',
+				'blockStyle' => '.gslider-ajax-block { opacity: 0.5; }',
+			],
+		];
+		$output = StyleGenerator::getInstance()->collect_and_render_dynamic_styles( '<div>AJAX</div>', $block );
+
+		if ( false === strpos( $output, '<style id="gslider-style-gslider-ajax-block">' ) ) {
+			fwrite( STDERR, "FAIL: JSON Accept AJAX request lost its <style> tag\n" );
+			exit( 1 );
+		}
+		echo "OK: wp_is_json_request() alone does not strip styles (AJAX loaders keep CSS)\n";
+
 		$is_json_mock = false;
+	}
+
+	/**
+	 * Verify StyleGenerator::render_block_with_styles() keeps per-slide CSS inside REST requests.
+	 *
+	 * @return void
+	 */
+	public function test_headless_render_keeps_styles_in_rest(): void {
+		global $is_rest_mock, $wp_filters;
+		$is_rest_mock = true;
+
+		StyleGenerator::reset_styles();
+		$generator = StyleGenerator::getInstance();
+		$slide     = [
+			'blockName' => 'gslider-blocks/flexi-content-item',
+			'attrs'     => [
+				'blockId'    => 'gslider-flexi-slide-1',
+				'blockStyle' => '.gslider-flexi-slide-1 { background: #123456; }',
+			],
+		];
+
+		// Route the render_block stub through the real filter so the test mirrors core.
+		$GLOBALS['gslider_render_block_impl'] = static function ( $block ) use ( $generator ) {
+			return $generator->collect_and_render_dynamic_styles( '<div class="flexi-content-item swiper-slide">Slide</div>', $block );
+		};
+
+		$first  = StyleGenerator::render_block_with_styles( $slide );
+		$second = StyleGenerator::render_block_with_styles( $slide );
+		unset( $GLOBALS['gslider_render_block_impl'] );
+
+		if ( false === strpos( $first, '<style id="gslider-style-gslider-flexi-slide-1">' ) || false === strpos( $first, 'background:#123456' ) ) {
+			fwrite( STDERR, "FAIL: Headless REST render dropped the Flexi slide CSS: $first\n" );
+			exit( 1 );
+		}
+		if ( false === strpos( $second, '<style' ) ) {
+			fwrite( STDERR, "FAIL: Headless render must not dedupe slide CSS between payload items\n" );
+			exit( 1 );
+		}
+		if ( false !== strpos( $first, 'fetchpriority' ) ) {
+			fwrite( STDERR, "FAIL: LCP optimization must not run in headless REST output\n" );
+			exit( 1 );
+		}
+		echo "OK: Headless /gslider render keeps Flexi slide <style> during REST requests\n";
+
+		// After the headless scope ends, generic REST rendering is stripped again.
+		$plain = $generator->collect_and_render_dynamic_styles( '<div>x</div>', $slide );
+		if ( '<div>x</div>' !== $plain ) {
+			fwrite( STDERR, "FAIL: Headless scope leaked into generic REST rendering\n" );
+			exit( 1 );
+		}
+		echo "OK: Headless scope is restored after rendering\n";
+
+		$is_rest_mock = false;
 	}
 
 	/**
@@ -393,15 +483,125 @@ class StyleGeneratorTest {
 	}
 
 	/**
+	 * Builds an image-slider block array for LCP tests.
+	 *
+	 * @param string $block_id Block ID.
+	 * @return array
+	 */
+	private function slider_block( string $block_id ): array {
+		return [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [ 'blockId' => $block_id ],
+		];
+	}
+
+	/**
+	 * Verify an attribute-value payload cannot become a real attribute (stored XSS).
+	 *
+	 * @return void
+	 */
+	public function test_lcp_xss_payload_creates_no_attribute(): void {
+		global $is_admin_mock, $is_feed_mock, $is_rest_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+		$is_rest_mock  = false;
+		StyleGenerator::reset_styles();
+
+		$content = '<div class="swiper"><div class="swiper-wrapper"><div class="swiper-slide">' .
+			'<img src="https://example.com/x.jpg" alt="loading=\'lazy\' onerror=alert(1)">' .
+			'</div></div></div>';
+
+		$output = StyleGenerator::getInstance()->collect_and_render_dynamic_styles( $content, $this->slider_block( 'gslider-xss' ) );
+
+		$processor = new WP_HTML_Tag_Processor( $output );
+		$processor->next_tag( 'img' );
+
+		if ( null !== $processor->get_attribute( 'onerror' ) ) {
+			fwrite( STDERR, "FAIL: XSS payload created a real onerror attribute: $output\n" );
+			exit( 1 );
+		}
+		if ( "loading='lazy' onerror=alert(1)" !== $processor->get_attribute( 'alt' ) ) {
+			fwrite( STDERR, "FAIL: alt attribute value was modified: $output\n" );
+			exit( 1 );
+		}
+		if ( 'high' !== $processor->get_attribute( 'fetchpriority' ) || null !== $processor->get_attribute( 'loading' ) ) {
+			fwrite( STDERR, "FAIL: Expected fetchpriority=high and no loading attribute to be invented: $output\n" );
+			exit( 1 );
+		}
+		echo "OK: alt=\"loading='lazy' onerror=alert(1)\" creates no new attribute and alt stays intact\n";
+	}
+
+	/**
+	 * Verify the testimonial rating icon is skipped and the real slide image is chosen.
+	 *
+	 * @return void
+	 */
+	public function test_lcp_skips_rating_icon(): void {
+		StyleGenerator::reset_styles();
+
+		$content = '<div class="swiper"><div class="swiper-wrapper"><div class="swiper-slide">' .
+			'<div class="gslider-testimonial-rating-icon"><img src="https://example.com/star.png" alt="star" loading="lazy"></div>' .
+			'<div class="gslider-testimonial-image"><img src="https://example.com/avatar.jpg" alt="Jane" loading="lazy"></div>' .
+			'</div></div></div>';
+
+		$output = StyleGenerator::getInstance()->collect_and_render_dynamic_styles(
+			$content,
+			[
+				'blockName' => 'gslider-blocks/testimonial',
+				'attrs'     => [ 'blockId' => 'gslider-testimonial' ],
+			]
+		);
+
+		$processor = new WP_HTML_Tag_Processor( $output );
+		$processor->next_tag( 'img' );
+		if ( null !== $processor->get_attribute( 'fetchpriority' ) || 'lazy' !== $processor->get_attribute( 'loading' ) ) {
+			fwrite( STDERR, "FAIL: Testimonial rating icon was optimized: $output\n" );
+			exit( 1 );
+		}
+		$processor->next_tag( 'img' );
+		if ( 'high' !== $processor->get_attribute( 'fetchpriority' ) || 'eager' !== $processor->get_attribute( 'loading' ) || 'async' !== $processor->get_attribute( 'decoding' ) ) {
+			fwrite( STDERR, "FAIL: Real testimonial image was not optimized: $output\n" );
+			exit( 1 );
+		}
+		echo "OK: Rating icon untouched, first real slide image optimized\n";
+	}
+
+	/**
+	 * Verify images outside slide markup are ignored and do not consume the once-per-page guard.
+	 *
+	 * @return void
+	 */
+	public function test_lcp_skips_non_slide_markup(): void {
+		StyleGenerator::reset_styles();
+		$generator = StyleGenerator::getInstance();
+
+		$no_slide = $generator->collect_and_render_dynamic_styles( '<div><img src="https://example.com/a.jpg" loading="lazy"></div>', $this->slider_block( 'gslider-noslide' ) );
+		if ( false !== strpos( $no_slide, 'fetchpriority' ) ) {
+			fwrite( STDERR, "FAIL: Image outside .swiper-slide was optimized\n" );
+			exit( 1 );
+		}
+
+		$later = $generator->collect_and_render_dynamic_styles(
+			'<div class="swiper-slide"><img src="https://example.com/b.jpg" loading="lazy"></div>',
+			$this->slider_block( 'gslider-slide' )
+		);
+		if ( false === strpos( $later, 'fetchpriority="high"' ) ) {
+			fwrite( STDERR, "FAIL: Slide image after non-slide markup was not optimized\n" );
+			exit( 1 );
+		}
+		echo "OK: Non-slide images are ignored; first real slide image still optimized\n";
+	}
+
+	/**
 	 * Test 9: Verify 'gslider_lcp_optimize' filter allows disabling or customizing LCP optimization.
 	 *
 	 * @return void
 	 */
 	public function test_gslider_lcp_optimize_filter(): void {
-		global $is_admin_mock, $is_feed_mock, $is_json_mock;
+		global $is_admin_mock, $is_feed_mock, $is_rest_mock;
 		$is_admin_mock = false;
 		$is_feed_mock  = false;
-		$is_json_mock  = false;
+		$is_rest_mock  = false;
 
 		StyleGenerator::reset_styles();
 		$generator = StyleGenerator::getInstance();
