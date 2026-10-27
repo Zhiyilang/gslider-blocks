@@ -323,7 +323,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          * Dimensions come from the attachment size that matches the URL (full or an
          * intermediate size), so cropped sizes keep their real aspect ratio.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @param string $block_content The block HTML content.
          * @param array  $block         The block data and attributes.
@@ -426,7 +426,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
         /**
          * Normalizes an image URL to "host/path" (no scheme, query or fragment) for matching.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @param string $url Image URL.
          * @return string Normalized key, or '' when the URL has no path.
@@ -448,7 +448,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          * against the full image and every intermediate size. Falls back to the
          * full-size metadata only when the src file name is the original file.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @param string $src           Image src from the markup.
          * @param int    $attachment_id Attachment ID.

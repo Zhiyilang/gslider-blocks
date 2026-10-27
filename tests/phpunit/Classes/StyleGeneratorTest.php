@@ -883,25 +883,26 @@ class StyleGeneratorTest {
 		$output = $generator->ensure_image_dimensions( $content, $block );
 
 		if ( ! preg_match( '/<img(?=[^>]*hero-300x300\.jpg)(?=[^>]*\swidth="300")(?=[^>]*\sheight="300")/i', $output ) ) {
-			fwrite( STDERR, "FAIL: intermediate size did not get its own 300x300 dimensions\n" );
+			fwrite( STDERR, "FAIL: intermediate size did not get its own 300x300 dimensions. Expected width=\"300\" height=\"300\" on hero-300x300.jpg. Actual: $output\n" );
 			exit( 1 );
 		}
 		if ( false !== strpos( $output, 'width="2000"' ) ) {
-			fwrite( STDERR, "FAIL: full-size dimensions were injected on an intermediate size\n" );
+			fwrite( STDERR, "FAIL: full-size dimensions were injected on an intermediate size. Expected no width=\"2000\". Actual: $output\n" );
 			exit( 1 );
 		}
 		if ( ! preg_match( '/<img(?=[^>]*uploads\/2026\/02\/logo\.png)(?=[^>]*\swidth="640")(?=[^>]*\sheight="320")(?=[^>]*data-width="9")/i', $output ) ) {
-			fwrite( STDERR, "FAIL: data-width/data-height blocked real width/height injection\n" );
+			fwrite( STDERR, "FAIL: data-width/data-height blocked real width/height injection. Expected width=\"640\" height=\"320\" and data-width=\"9\". Actual: $output\n" );
 			exit( 1 );
 		}
 		if ( 1 !== substr_count( $output, 'width="640"' ) ) {
-			fwrite( STDERR, "FAIL: same-basename image from another folder got slide dimensions\n" );
+			fwrite( STDERR, "FAIL: same-basename image from another folder got slide dimensions. Expected exactly 1 occurrence of width=\"640\". Actual: $output\n" );
 			exit( 1 );
 		}
 
-		$outside = '<div class="gslider-nav"><img src="https://example.com/wp-content/uploads/2026/02/logo.png" alt="x"></div>';
-		if ( $outside !== $generator->ensure_image_dimensions( $outside, $block ) ) {
-			fwrite( STDERR, "FAIL: image outside .swiper-slide was modified\n" );
+		$outside        = '<div class="gslider-nav"><img src="https://example.com/wp-content/uploads/2026/02/logo.png" alt="x"></div>';
+		$outside_actual = $generator->ensure_image_dimensions( $outside, $block );
+		if ( $outside !== $outside_actual ) {
+			fwrite( STDERR, "FAIL: image outside .swiper-slide was modified. Expected: $outside. Actual: $outside_actual\n" );
 			exit( 1 );
 		}
 
