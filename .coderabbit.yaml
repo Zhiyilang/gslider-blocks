@@ -59,25 +59,25 @@ reviews:
         - Responsive Architecture (Rule 5): All visual and layout controls must support responsive objects: `{ Desktop, Tablet, Mobile }`.
         - Design System Controls (Rule 8): Blocks must exclusively use approved `@Components/*` controls. Raw `@wordpress/components` input controls inside block inspectors are forbidden.
         - Build Verification:
-          * If block source files are changed: remind the author to run `npm run build` and commit the updated `build/` output.
+          * If block source files are changed: remind the author to run `npm run build` locally to confirm it compiles. Do not ask for `build/` to be committed (it is gitignored); the "build" CI job is the source of truth.
           * If MCP build inputs (`styling.js`, `attributes.js`, `save.js`, `deprecated.js`, `block.json`, `preset.js`, `inspector.js`) are changed: remind the author to run `npm run mcp:build` and commit the bundle and schemas. Do not judge whether `packages/mcp-server/dist/` was committed (it is path-filtered); the "Block Build & MCP Drift Check" CI job is the source of truth.
           * If `attributes.js` is changed: remind the author to run `npm run defaults:generate` and commit any updated defaults in `includes/RestApi/defaults/`. Also verify if a `deprecated.js` migration is needed to prevent live block invalidation, and run `npm run mcp:test` to verify zero schema drift.
 
     # 4. Block Styles and Metadata Build Verification
     - path: "src/blocks/**/style.scss"
       instructions: |
-        - Build Verification: Remind the author to run `npm run build` and commit the updated `build/` output.
+        - Build Verification: Remind the author to run `npm run build` locally to confirm it compiles. `build/` is gitignored; do not ask for it to be committed.
 
     - path: "src/blocks/**/block.json"
       instructions: |
         - Build Verification:
-          * Remind the author to run `npm run build` and commit the updated `build/` output.
+          * Remind the author to run `npm run build` locally to confirm it compiles (`build/` is gitignored; do not ask for it to be committed).
           * Remind the author to run `npm run mcp:build` and commit the bundle.
 
     # 5. Global Constants & Shared Schemas
     - path: "src/constants/**/*.js"
       instructions: |
-        - If `src/constants/index.js` is changed: remind the author to run `npm run mcp:build` and commit the updated MCP schemas. Shared option lists feed the generated block schemas.
+        - If `src/constants/index.js` is changed: remind the author to run `npm run build` (confirm it compiles locally; `build/` is gitignored) and run `npm run mcp:build` to commit updated MCP schemas. Shared option lists feed the generated block schemas.
 
     # 6. Block Attributes Schema Standards
     - path: "src/blocks/**/attributes.js"
@@ -110,7 +110,7 @@ reviews:
       instructions: |
         - Design Tokens (Rule 10): Never hardcode raw hex color codes or font families directly in dashboard SCSS.
         - All dashboard tokens must be imported from `admin/scss/dashboard/_variables.scss` (`@use 'variables' as *;`).
-        - Build Verification: When dashboard SCSS changes, remind the author to run `npm run admin:build` and verify that generated CSS output under `assets/admin/css/` is updated for inclusion in the release archive.
+        - Build Verification: When dashboard SCSS changes, remind the author to run `npm run admin:build` and commit the regenerated `assets/admin/css/` output. Do not judge whether it was committed (it is path-filtered).
 
 knowledge_base:
   code_guidelines:
