@@ -319,7 +319,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          * Ensures explicit width and height HTML attributes on slide images to eliminate CLS (#391).
          *
          * Uses WP_HTML_Tag_Processor (no regex) and only touches <img> tags inside
-         * .swiper-slide whose src points to the same file as a block image/logo/author item.
+         * .swiper-slide whose src points to the same file as a block image/logo/author/rating item.
          * Dimensions come from the attachment size that matches the URL (full or an
          * intermediate size), so cropped sizes keep their real aspect ratio.
          *
@@ -351,6 +351,9 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
                 foreach ( $block['attrs']['sliderItems'] as $slide ) {
                     if ( ! empty( $slide['authorImage'] ) && is_array( $slide['authorImage'] ) ) {
                         $items[] = $slide['authorImage'];
+                    }
+                    if ( ! empty( $slide['ratingImage'] ) && is_array( $slide['ratingImage'] ) ) {
+                        $items[] = $slide['ratingImage'];
                     }
                 }
                 if ( ! empty( $block['attrs']['quoteImageUrl'] ) && ! empty( $block['attrs']['quoteImageID'] ) ) {

@@ -911,7 +911,7 @@ class StyleGeneratorTest {
 	}
 
 	/**
-	 * Verify ensure_image_dimensions injects dimensions on testimonial author and quote images.
+	 * Verify ensure_image_dimensions injects dimensions on testimonial author, quote, and rating images.
 	 *
 	 * @return void
 	 */
@@ -931,6 +931,11 @@ class StyleGeneratorTest {
 				'width'  => 80,
 				'height' => 80,
 			],
+			62 => [
+				'file'   => '2026/02/star.png',
+				'width'  => 24,
+				'height' => 24,
+			],
 		];
 
 		$generator = StyleGenerator::getInstance();
@@ -947,6 +952,10 @@ class StyleGeneratorTest {
 							'id'  => 60,
 							'url' => 'https://example.com/wp-content/uploads/2026/02/author.jpg',
 						],
+						'ratingImage' => [
+							'id'  => 62,
+							'url' => 'https://example.com/wp-content/uploads/2026/02/star.png',
+						],
 					],
 				],
 			],
@@ -960,6 +969,12 @@ class StyleGeneratorTest {
 			'</div>' .
 			'<div class="gslider-testimonial-author-image-wrapper">' .
 			'<img src="https://example.com/wp-content/uploads/2026/02/author.jpg" alt="Jane" class="gslider-testimonial-author-image" />' .
+			'</div>' .
+			'<div class="gslider-testimonial-rating-wrapper">' .
+			'<div class="gslider-testimonial-rating-icon">' .
+			'<img src="https://example.com/wp-content/uploads/2026/02/star.png" alt="Star" />' .
+			'</div>' .
+			'</div>' .
 			'</div>' .
 			'</div>' .
 			'</div></div></div>';
@@ -976,7 +991,12 @@ class StyleGeneratorTest {
 			exit( 1 );
 		}
 
-		echo "OK: ensure_image_dimensions injects dimensions on testimonial author and quote images\n";
+		if ( ! preg_match( '/<img(?=[^>]*star\.png)(?=[^>]*\swidth="24")(?=[^>]*\sheight="24")[^>]*>/i', $output ) ) {
+			fwrite( STDERR, "FAIL: Testimonial rating image did not receive injected width=\"24\" height=\"24\". Expected dimensions on star.png. Actual: $output\n" );
+			exit( 1 );
+		}
+
+		echo "OK: ensure_image_dimensions injects dimensions on testimonial author, quote, and rating images\n";
 	}
 
 	/**
