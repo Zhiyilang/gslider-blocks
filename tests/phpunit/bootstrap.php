@@ -533,11 +533,72 @@ if ( ! function_exists( 'wp_style_is' ) ) {
 	}
 }
 
+if ( ! function_exists( 'sanitize_file_name' ) ) {
+	function sanitize_file_name( $name ) {
+		return preg_replace( '/[^a-zA-Z0-9_\-\.]/', '', (string) $name );
+	}
+}
+
+if ( ! class_exists( '_WP_Dependency' ) ) {
+	class _WP_Dependency {
+		public $handle;
+		public $src;
+		public $deps = [];
+		public $ver = false;
+		public $args = null;
+		public $extra = [];
+
+		public function __construct( $handle, $src, $deps = [], $ver = false, $args = null ) {
+			$this->handle = $handle;
+			$this->src    = $src;
+			$this->deps   = is_array( $deps ) ? $deps : [];
+			$this->ver    = $ver;
+			$this->args   = $args;
+			$this->extra  = is_array( $args ) && isset( $args['strategy'] ) ? [ 'strategy' => $args['strategy'] ] : [];
+		}
+	}
+}
+
+if ( ! class_exists( 'WP_Scripts' ) ) {
+	class WP_Scripts {
+		public $registered = [];
+	}
+}
+
+global $wp_scripts_obj;
+$wp_scripts_obj = new WP_Scripts();
+
+global $wp_scripts;
+$wp_scripts = [];
+
+if ( ! function_exists( 'wp_scripts' ) ) {
+	function wp_scripts() {
+		global $wp_scripts_obj, $wp_scripts;
+		if ( ! ( $wp_scripts_obj instanceof WP_Scripts ) ) {
+			$wp_scripts_obj = new WP_Scripts();
+		}
+		if ( is_array( $wp_scripts ) ) {
+			foreach ( $wp_scripts as $h => $data ) {
+				if ( ! isset( $wp_scripts_obj->registered[ $h ] ) ) {
+					$wp_scripts_obj->registered[ $h ] = new _WP_Dependency(
+						$h,
+						$data['src'] ?? '',
+						$data['deps'] ?? [],
+						$data['ver'] ?? false,
+						$data['args'] ?? false
+					);
+				}
+			}
+		}
+		return $wp_scripts_obj;
+	}
+}
+
 if ( ! function_exists( 'wp_script_is' ) ) {
 	function wp_script_is( $handle, $list = 'enqueued' ) {
 		global $wp_scripts, $enqueued_scripts;
 		if ( 'registered' === $list ) {
-			return isset( $wp_scripts[ $handle ] );
+			return isset( $wp_scripts[ $handle ] ) || ( function_exists( 'wp_scripts' ) && isset( wp_scripts()->registered[ $handle ] ) );
 		}
 		if ( 'enqueued' === $list ) {
 			return in_array( $handle, $enqueued_scripts, true );
@@ -549,8 +610,18 @@ if ( ! function_exists( 'wp_script_is' ) ) {
 if ( ! function_exists( 'wp_script_add_data' ) ) {
 	function wp_script_add_data( $handle, $key, $value ) {
 		global $wp_scripts;
-		if ( ! isset( $wp_scripts[ $handle ] ) ) {
+		$scripts = function_exists( 'wp_scripts' ) ? wp_scripts() : null;
+		if ( ! isset( $wp_scripts[ $handle ] ) && ( ! $scripts || ! isset( $scripts->registered[ $handle ] ) ) ) {
 			return false;
+		}
+		if ( ! isset( $wp_scripts[ $handle ] ) ) {
+			$wp_scripts[ $handle ] = [
+				'src'   => '',
+				'deps'  => [],
+				'ver'   => false,
+				'args'  => [],
+				'extra' => [],
+			];
 		}
 		if ( ! isset( $wp_scripts[ $handle ]['extra'] ) ) {
 			$wp_scripts[ $handle ]['extra'] = [];
@@ -562,12 +633,18 @@ if ( ! function_exists( 'wp_script_add_data' ) ) {
 			}
 			$wp_scripts[ $handle ]['args']['strategy'] = $value;
 		}
+		if ( $scripts && isset( $scripts->registered[ $handle ] ) ) {
+			$scripts->registered[ $handle ]->extra[ $key ] = $value;
+			if ( 'strategy' === $key ) {
+				if ( ! is_array( $scripts->registered[ $handle ]->args ) ) {
+					$scripts->registered[ $handle ]->args = [];
+				}
+				$scripts->registered[ $handle ]->args['strategy'] = $value;
+			}
+		}
 		return true;
 	}
 }
-
-global $wp_scripts;
-$wp_scripts = [];
 
 if ( ! function_exists( 'wp_register_script' ) ) {
 	function wp_register_script( $handle, $src, $deps = [], $ver = false, $args = false ) {
@@ -579,7 +656,33 @@ if ( ! function_exists( 'wp_register_script' ) ) {
 			'args'  => $args,
 			'extra' => is_array( $args ) && isset( $args['strategy'] ) ? [ 'strategy' => $args['strategy'] ] : [],
 		];
+		if ( function_exists( 'wp_scripts' ) ) {
+			$scripts = wp_scripts();
+			$scripts->registered[ $handle ] = new _WP_Dependency( $handle, $src, $deps, $ver, $args );
+		}
 		return true;
+	}
+}
+
+if ( ! function_exists( 'register_block_type' ) ) {
+	function register_block_type( $file_or_folder, $args = [] ) {
+		global $registered_block_types;
+		if ( ! is_array( $registered_block_types ) ) {
+			$registered_block_types = [];
+		}
+		$registered_block_types[] = $file_or_folder;
+
+		$json_file = is_string( $file_or_folder ) ? rtrim( $file_or_folder, '/' ) . '/block.json' : '';
+		if ( file_exists( $json_file ) ) {
+			$data = json_decode( file_get_contents( $json_file ), true );
+			if ( ! empty( $data['name'] ) ) {
+				$slug   = str_replace( 'gslider-blocks/', '', $data['name'] );
+				$handle = 'gslider-blocks-' . $slug . '-view-script';
+				wp_register_script( $handle, 'view.js', [] );
+			}
+		}
+
+		return (object) [ 'name' => is_string( $file_or_folder ) ? basename( $file_or_folder ) : 'mock-block' ];
 	}
 }
 

@@ -109,14 +109,24 @@ if ( ! class_exists( RegistrationBlocks::class, false ) ) {
                 throw new \Exception( 'Block registration failed for ' . esc_html( $block ) );
             }
 
-            // Ensure the generated viewScript handles have 'defer' strategy so WP Script Loader does not drop defer from dependencies.
-            $view_handles = [
-                'gslider-blocks-' . sanitize_file_name( $block ) . '-view-script',
-                'gslider-' . sanitize_file_name( $block ) . '-view-script',
-            ];
-            foreach ( $view_handles as $view_handle ) {
-                if ( function_exists( 'wp_script_add_data' ) && function_exists( 'wp_script_is' ) && wp_script_is( $view_handle, 'registered' ) ) {
+            // Ensure the generated viewScript handle has 'defer' strategy and Swiper dependency.
+            $view_handle = 'gslider-blocks-' . sanitize_file_name( $block ) . '-view-script';
+
+            if ( function_exists( 'wp_script_is' ) && wp_script_is( $view_handle, 'registered' ) ) {
+                if ( function_exists( 'wp_script_add_data' ) ) {
                     wp_script_add_data( $view_handle, 'strategy', 'defer' );
+                }
+
+                if ( function_exists( 'wp_scripts' ) && wp_script_is( 'gslider-blocks-swiper-script', 'registered' ) ) {
+                    $scripts = wp_scripts();
+                    if ( isset( $scripts->registered[ $view_handle ] ) ) {
+                        $script = $scripts->registered[ $view_handle ];
+                        if ( is_object( $script ) && property_exists( $script, 'deps' ) && is_array( $script->deps ) ) {
+                            if ( ! in_array( 'gslider-blocks-swiper-script', $script->deps, true ) ) {
+                                $script->deps[] = 'gslider-blocks-swiper-script';
+                            }
+                        }
+                    }
                 }
             }
         }
