@@ -1458,25 +1458,35 @@ class StyleGeneratorTest {
 		}
 		echo "OK: Classic theme pre-collection resolves core/block synced patterns and enqueues stylesheets\n";
 
-		// Verify draft or non-wp_block synced patterns are skipped like core render_block_core_block().
-		$draft_post               = new WP_Post();
-		$draft_post->ID           = 43;
-		$draft_post->post_status  = 'draft';
-		$draft_post->post_type    = 'wp_block';
-		$draft_post->post_title   = 'Draft Synced Pattern';
-		$draft_post->post_content = '<!-- wp:gslider-blocks/image-slider {"blockId":"slider-draft43"} /-->';
-		$wp_mock_posts[43]        = $draft_post;
+		// Draft, password-protected, or non-wp_block refs must not be followed.
+		$bad_refs = [
+			'draft'       => [ 'post_status' => 'draft', 'post_type' => 'wp_block', 'post_password' => '' ],
+			'not_pattern' => [ 'post_status' => 'publish', 'post_type' => 'post', 'post_password' => '' ],
+			'password'    => [ 'post_status' => 'publish', 'post_type' => 'wp_block', 'post_password' => 'secret' ],
+		];
+		foreach ( $bad_refs as $label => $props ) {
+			foreach ( $props as $prop => $value ) {
+				$synced_post->$prop = $value;
+			}
+			StyleGenerator::reset_styles();
+			$generator->clear_dynamic_css_cache();
+			$enqueued_styles = [];
+			$generator->pre_collect_queried_post_styles();
+			if ( ! empty( $enqueued_styles[ $handle ] ) ) {
+				fwrite( STDERR, "FAIL: Synced pattern pre-collection followed a {$label} ref; enqueued: " . implode( ', ', array_keys( $enqueued_styles ) ) . "\n" );
+				exit( 1 );
+			}
+		}
+		echo "OK: Pre-collection skips draft, password-protected and non-wp_block refs\n";
 
-		$enqueued_styles = [];
-		$wp_post_content = '<!-- wp:block {"ref":43} /-->';
-		$generator->pre_collect_queried_post_styles();
-
-		if ( ! empty( $enqueued_styles['gslider-style-slider-draft43'] ) ) {
-			fwrite( STDERR, "FAIL: Pre-collection should skip non-published synced patterns\n" );
+		// Atomic write leaves no temp files behind.
+		$upload   = wp_upload_dir();
+		$leftover = glob( trailingslashit( $upload['basedir'] ) . 'gslider-styles/*.tmp' );
+		if ( ! empty( $leftover ) ) {
+			fwrite( STDERR, 'FAIL: temp files left in cache dir: ' . implode( ', ', $leftover ) . "\n" );
 			exit( 1 );
 		}
-		echo "OK: Pre-collection skips non-published synced patterns\n";
-		unset( $wp_mock_posts[43] );
+		echo "OK: CSS cache writes leave no .tmp files\n";
 
 		unset( $wp_mock_posts[42] );
 		$generator->clear_dynamic_css_cache();
