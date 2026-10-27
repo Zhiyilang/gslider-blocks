@@ -57,6 +57,7 @@ class StyleGeneratorTest {
 		$this->test_json_accept_ajax_keeps_styles();
 		$this->test_headless_render_keeps_styles_in_rest();
 		$this->test_lcp_image_optimization();
+		$this->test_lcp_preserves_existing_fetchpriority_and_decoding();
 		$this->test_lcp_xss_payload_creates_no_attribute();
 		$this->test_lcp_skips_rating_icon();
 		$this->test_lcp_skips_non_slide_markup();
@@ -480,6 +481,63 @@ class StyleGeneratorTest {
 			exit( 1 );
 		}
 		echo "OK: Subsequent sliders on the page do not receive duplicate fetchpriority\n";
+	}
+
+	/**
+	 * Verify an <img> with fetchpriority="low" decoding="sync" keeps both values,
+	 * and an <img> with neither gets "high" and "async".
+	 *
+	 * @return void
+	 */
+	public function test_lcp_preserves_existing_fetchpriority_and_decoding(): void {
+		global $is_admin_mock, $is_feed_mock, $is_rest_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+		$is_rest_mock  = false;
+
+		$generator = StyleGenerator::getInstance();
+
+		// Case 1: Image already has fetchpriority="low" and decoding="sync".
+		StyleGenerator::reset_styles();
+		$content_custom = '<div class="gslider-image-slider-wrapper gslider-custom">' .
+			'<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide"><img src="https://example.com/custom.jpg" alt="Custom" fetchpriority="low" decoding="sync" loading="lazy" /></div>' .
+			'</div></div></div>';
+
+		$output_custom = $generator->collect_and_render_dynamic_styles( $content_custom, $this->slider_block( 'gslider-custom' ) );
+
+		if ( ! preg_match( '/fetchpriority="low"/i', $output_custom ) ) {
+			fwrite( STDERR, "FAIL: Existing fetchpriority=\"low\" was overwritten: $output_custom\n" );
+			exit( 1 );
+		}
+		if ( ! preg_match( '/decoding="sync"/i', $output_custom ) ) {
+			fwrite( STDERR, "FAIL: Existing decoding=\"sync\" was overwritten: $output_custom\n" );
+			exit( 1 );
+		}
+		if ( ! preg_match( '/loading="eager"/i', $output_custom ) ) {
+			fwrite( STDERR, "FAIL: loading=\"lazy\" was not converted to \"eager\" on custom image: $output_custom\n" );
+			exit( 1 );
+		}
+		echo "OK: Existing fetchpriority=\"low\" and decoding=\"sync\" were preserved on LCP image\n";
+
+		// Case 2: Image with neither gets fetchpriority="high" and decoding="async".
+		StyleGenerator::reset_styles();
+		$content_default = '<div class="gslider-image-slider-wrapper gslider-default">' .
+			'<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide"><img src="https://example.com/default.jpg" alt="Default" loading="lazy" /></div>' .
+			'</div></div></div>';
+
+		$output_default = $generator->collect_and_render_dynamic_styles( $content_default, $this->slider_block( 'gslider-default' ) );
+
+		if ( ! preg_match( '/fetchpriority="high"/i', $output_default ) ) {
+			fwrite( STDERR, "FAIL: Image with no fetchpriority did not receive \"high\": $output_default\n" );
+			exit( 1 );
+		}
+		if ( ! preg_match( '/decoding="async"/i', $output_default ) ) {
+			fwrite( STDERR, "FAIL: Image with no decoding did not receive \"async\": $output_default\n" );
+			exit( 1 );
+		}
+		echo "OK: Image with neither attribute received fetchpriority=\"high\" and decoding=\"async\"\n";
 	}
 
 	/**

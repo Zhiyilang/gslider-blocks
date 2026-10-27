@@ -286,8 +286,12 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
                     continue;
                 }
 
-                $processor->set_attribute( 'fetchpriority', 'high' );
-                $processor->set_attribute( 'decoding', 'async' );
+                if ( null === $processor->get_attribute( 'fetchpriority' ) ) {
+                    $processor->set_attribute( 'fetchpriority', 'high' );
+                }
+                if ( null === $processor->get_attribute( 'decoding' ) ) {
+                    $processor->set_attribute( 'decoding', 'async' );
+                }
 
                 $loading = $processor->get_attribute( 'loading' );
                 if ( is_string( $loading ) && 'lazy' === strtolower( $loading ) ) {
