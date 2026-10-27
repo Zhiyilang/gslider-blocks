@@ -29,6 +29,8 @@ use GSlider\Plugin;
 
 /**
  * Test class for GSlider\Assets\FrontendAssets.
+ *
+ * @package GSlider\Tests\Assets
  */
 class FrontendAssetsTest {
 
@@ -44,6 +46,7 @@ class FrontendAssetsTest {
 		$this->test_plugin_services_contains_class();
 		$this->test_register_hooks();
 		$this->test_enqueue_assets_registers_scripts_with_defer();
+		$this->test_vendor_scripts_not_registered_twice();
 		$this->test_fslightbox_admin_enqueue();
 
 		echo "\nAll FrontendAssets unit tests passed successfully!\n";
@@ -142,7 +145,7 @@ class FrontendAssetsTest {
 			exit( 1 );
 		}
 		$swiper_args = $wp_scripts['gslider-blocks-swiper-script']['args'];
-		if ( ! is_array( $swiper_args ) || empty( $swiper_args['in_footer'] ) || ( isset( $swiper_args['strategy'] ) && 'defer' !== $swiper_args['strategy'] ) ) {
+		if ( ! is_array( $swiper_args ) || empty( $swiper_args['in_footer'] ) || ( $swiper_args['strategy'] ?? null ) !== 'defer' ) {
 			fwrite( STDERR, "FAIL: gslider-blocks-swiper-script is missing strategy => defer\n" );
 			exit( 1 );
 		}
@@ -154,11 +157,45 @@ class FrontendAssetsTest {
 			exit( 1 );
 		}
 		$lightbox_args = $wp_scripts['gslider-blocks-fslightbox-script']['args'];
-		if ( ! is_array( $lightbox_args ) || empty( $lightbox_args['in_footer'] ) || ( isset( $lightbox_args['strategy'] ) && 'defer' !== $lightbox_args['strategy'] ) ) {
+		if ( ! is_array( $lightbox_args ) || empty( $lightbox_args['in_footer'] ) || ( $lightbox_args['strategy'] ?? null ) !== 'defer' ) {
 			fwrite( STDERR, "FAIL: gslider-blocks-fslightbox-script is missing strategy => defer\n" );
 			exit( 1 );
 		}
 		echo "OK: fsLightbox script registered with strategy => defer\n";
+	}
+
+	/**
+	 * Verify register_vendor_scripts() never re-registers an existing handle.
+	 *
+	 * @return void
+	 */
+	public function test_vendor_scripts_not_registered_twice(): void {
+		global $wp_scripts, $wp_actions;
+
+		$assets = FrontendAssets::getInstance();
+		$assets->register_vendor_scripts();
+		$wp_scripts['gslider-blocks-swiper-script']['src'] = 'sentinel';
+		$assets->register_vendor_scripts();
+		$assets->enqueue_assets();
+
+		if ( 'sentinel' !== $wp_scripts['gslider-blocks-swiper-script']['src'] ) {
+			fwrite( STDERR, "FAIL: gslider-blocks-swiper-script was registered twice\n" );
+			exit( 1 );
+		}
+		echo "OK: Vendor scripts are registered only once\n";
+
+		$assets->register();
+		$hooked = false;
+		foreach ( $wp_actions['init'] ?? [] as $action ) {
+			if ( is_array( $action['callback'] ) && $action['callback'][0] instanceof FrontendAssets && 'register_vendor_scripts' === $action['callback'][1] && 5 === $action['priority'] ) {
+				$hooked = true;
+			}
+		}
+		if ( ! $hooked ) {
+			fwrite( STDERR, "FAIL: register_vendor_scripts is not hooked on init priority 5\n" );
+			exit( 1 );
+		}
+		echo "OK: register_vendor_scripts hooked on init:5 (before block registration)\n";
 	}
 
 	/**

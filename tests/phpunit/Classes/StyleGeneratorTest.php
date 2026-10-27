@@ -8,8 +8,11 @@
  * 3. Dynamic styles are sanitized and scoped strictly to block IDs.
  * 4. Duplicate <style> tags are prevented for identical block IDs in the same request (#312).
  * 5. <style> tags are completely excluded from RSS feeds (#312).
- * 6. LCP image optimization prioritizes the first slide image on the frontend (#391).
- * 7. reset_styles() resets collected styles, printed IDs, and optimization state.
+ * 6. Generic REST responses get no <style>, but the plugin's headless render keeps it,
+ *    and JSON-Accept AJAX requests are not treated as REST.
+ * 7. LCP image optimization (WP_HTML_Tag_Processor) prioritizes only the first real slide image,
+ *    skips testimonial rating icons, cannot be abused via attribute values (XSS), and can be disabled.
+ * 8. reset_styles() resets collected styles, printed IDs, and optimization state.
  *
  * @package GSlider\Tests\Classes
  */
@@ -50,14 +53,24 @@ class StyleGeneratorTest {
 		$this->test_css_scoping_and_sanitization();
 		$this->test_dynamic_css_deduplication();
 		$this->test_feed_exclusion();
+		$this->test_rest_request_exclusion();
+		$this->test_json_accept_ajax_keeps_styles();
+		$this->test_headless_render_keeps_styles_in_rest();
 		$this->test_lcp_image_optimization();
+		$this->test_lcp_preserves_existing_fetchpriority_and_decoding();
+		$this->test_lcp_xss_payload_creates_no_attribute();
+		$this->test_lcp_skips_rating_icon();
+		$this->test_lcp_skips_non_slide_markup();
+		$this->test_gslider_lcp_optimize_filter();
 		$this->test_ensure_image_dimensions();
+		$this->test_ensure_image_dimensions_edge_cases();
+		$this->test_ensure_image_dimensions_testimonial_author_image();
+		$this->test_reset_styles();
 		$this->test_csp_nonce_injection();
 		$this->test_dynamic_css_file_caching();
+		$this->test_print_footer_styles_deduplication();
 		$this->test_option_driven_file_caching_and_cache_retention();
 		$this->test_classic_theme_pre_collection();
-		$this->test_print_footer_styles_deduplication();
-		$this->test_reset_styles();
 
 		echo "\nAll StyleGenerator unit tests passed successfully!\n";
 	}
@@ -261,6 +274,127 @@ class StyleGeneratorTest {
 	}
 
 	/**
+	 * Test 7: Verify <style> tags are excluded from REST requests (#312).
+	 *
+	 * @return void
+	 */
+	public function test_rest_request_exclusion(): void {
+		global $is_admin_mock, $is_feed_mock, $is_rest_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+		$is_rest_mock  = true; // Simulate REST request.
+
+		StyleGenerator::reset_styles();
+		$generator = StyleGenerator::getInstance();
+
+		$block_id = 'gslider-rest-block';
+		$block    = [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [
+				'blockId'    => $block_id,
+				'blockStyle' => ".{$block_id} { opacity: 0.9; }",
+			],
+		];
+		$content  = '<div class="gslider-image-slider-wrapper">REST Content</div>';
+
+		$output = $generator->collect_and_render_dynamic_styles( $content, $block );
+
+		if ( false !== strpos( $output, '<style' ) ) {
+			fwrite( STDERR, "FAIL: <style> tag leaked into REST request output\n" );
+			exit( 1 );
+		}
+		if ( $output !== $content ) {
+			fwrite( STDERR, "FAIL: Block content was altered in REST context\n" );
+			exit( 1 );
+		}
+		echo "OK: Dynamic <style> tags are completely excluded from REST requests\n";
+
+		$is_rest_mock = false;
+	}
+
+	/**
+	 * Verify a front-end AJAX request with a JSON Accept header still gets styles.
+	 *
+	 * @return void
+	 */
+	public function test_json_accept_ajax_keeps_styles(): void {
+		global $is_json_mock, $is_rest_mock;
+		$is_json_mock = true;
+		$is_rest_mock = false;
+
+		StyleGenerator::reset_styles();
+		$block  = [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [
+				'blockId'    => 'gslider-ajax-block',
+				'blockStyle' => '.gslider-ajax-block { opacity: 0.5; }',
+			],
+		];
+		$output = StyleGenerator::getInstance()->collect_and_render_dynamic_styles( '<div>AJAX</div>', $block );
+
+		if ( false === strpos( $output, '<style id="gslider-style-gslider-ajax-block">' ) ) {
+			fwrite( STDERR, "FAIL: JSON Accept AJAX request lost its <style> tag\n" );
+			exit( 1 );
+		}
+		echo "OK: wp_is_json_request() alone does not strip styles (AJAX loaders keep CSS)\n";
+
+		$is_json_mock = false;
+	}
+
+	/**
+	 * Verify StyleGenerator::render_block_with_styles() keeps per-slide CSS inside REST requests.
+	 *
+	 * @return void
+	 */
+	public function test_headless_render_keeps_styles_in_rest(): void {
+		global $is_rest_mock, $wp_filters;
+		$is_rest_mock = true;
+
+		StyleGenerator::reset_styles();
+		$generator = StyleGenerator::getInstance();
+		$slide     = [
+			'blockName' => 'gslider-blocks/flexi-content-item',
+			'attrs'     => [
+				'blockId'    => 'gslider-flexi-slide-1',
+				'blockStyle' => '.gslider-flexi-slide-1 { background: #123456; }',
+			],
+		];
+
+		// Route the render_block stub through the real filter so the test mirrors core.
+		$GLOBALS['gslider_render_block_impl'] = static function ( $block ) use ( $generator ) {
+			return $generator->collect_and_render_dynamic_styles( '<div class="flexi-content-item swiper-slide">Slide</div>', $block );
+		};
+
+		$first  = StyleGenerator::render_block_with_styles( $slide );
+		$second = StyleGenerator::render_block_with_styles( $slide );
+		unset( $GLOBALS['gslider_render_block_impl'] );
+
+		if ( false === strpos( $first, '<style id="gslider-style-gslider-flexi-slide-1">' ) || false === strpos( $first, 'background:#123456' ) ) {
+			fwrite( STDERR, "FAIL: Headless REST render dropped the Flexi slide CSS: $first\n" );
+			exit( 1 );
+		}
+		if ( false === strpos( $second, '<style' ) ) {
+			fwrite( STDERR, "FAIL: Headless render must not dedupe slide CSS between payload items\n" );
+			exit( 1 );
+		}
+		if ( false !== strpos( $first, 'fetchpriority' ) ) {
+			fwrite( STDERR, "FAIL: LCP optimization must not run in headless REST output\n" );
+			exit( 1 );
+		}
+		echo "OK: Headless /gslider render keeps Flexi slide <style> during REST requests\n";
+
+		// After the headless scope ends, generic REST rendering is stripped again.
+		$plain = $generator->collect_and_render_dynamic_styles( '<div>x</div>', $slide );
+		if ( '<div>x</div>' !== $plain ) {
+			fwrite( STDERR, "FAIL: Headless scope leaked into generic REST rendering\n" );
+			exit( 1 );
+		}
+		echo "OK: Headless scope is restored after rendering\n";
+
+		$is_rest_mock = false;
+	}
+
+	/**
 	 * Test 7: Verify LCP image optimization on first slide of first slider on the frontend (#391).
 	 *
 	 * @return void
@@ -358,7 +492,230 @@ class StyleGeneratorTest {
 	}
 
 	/**
-	 * Test 8: Verify ensure_image_dimensions injects width and height on slide images (#391).
+	 * Verify an <img> with fetchpriority="low" decoding="sync" keeps both values,
+	 * and an <img> with neither gets "high" and "async".
+	 *
+	 * @return void
+	 */
+	public function test_lcp_preserves_existing_fetchpriority_and_decoding(): void {
+		global $is_admin_mock, $is_feed_mock, $is_rest_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+		$is_rest_mock  = false;
+
+		$generator = StyleGenerator::getInstance();
+
+		// Case 1: Image already has fetchpriority="low" and decoding="sync".
+		StyleGenerator::reset_styles();
+		$content_custom = '<div class="gslider-image-slider-wrapper gslider-custom">' .
+			'<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide"><img src="https://example.com/custom.jpg" alt="Custom" fetchpriority="low" decoding="sync" loading="lazy" /></div>' .
+			'</div></div></div>';
+
+		$output_custom = $generator->collect_and_render_dynamic_styles( $content_custom, $this->slider_block( 'gslider-custom' ) );
+
+		if ( ! preg_match( '/fetchpriority="low"/i', $output_custom ) ) {
+			fwrite( STDERR, "FAIL: Existing fetchpriority=\"low\" was overwritten: $output_custom\n" );
+			exit( 1 );
+		}
+		if ( ! preg_match( '/decoding="sync"/i', $output_custom ) ) {
+			fwrite( STDERR, "FAIL: Existing decoding=\"sync\" was overwritten: $output_custom\n" );
+			exit( 1 );
+		}
+		if ( ! preg_match( '/loading="eager"/i', $output_custom ) ) {
+			fwrite( STDERR, "FAIL: loading=\"lazy\" was not converted to \"eager\" on custom image: $output_custom\n" );
+			exit( 1 );
+		}
+		echo "OK: Existing fetchpriority=\"low\" and decoding=\"sync\" were preserved on LCP image\n";
+
+		// Case 2: Image with neither gets fetchpriority="high" and decoding="async".
+		StyleGenerator::reset_styles();
+		$content_default = '<div class="gslider-image-slider-wrapper gslider-default">' .
+			'<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide"><img src="https://example.com/default.jpg" alt="Default" loading="lazy" /></div>' .
+			'</div></div></div>';
+
+		$output_default = $generator->collect_and_render_dynamic_styles( $content_default, $this->slider_block( 'gslider-default' ) );
+
+		if ( ! preg_match( '/fetchpriority="high"/i', $output_default ) ) {
+			fwrite( STDERR, "FAIL: Image with no fetchpriority did not receive \"high\": $output_default\n" );
+			exit( 1 );
+		}
+		if ( ! preg_match( '/decoding="async"/i', $output_default ) ) {
+			fwrite( STDERR, "FAIL: Image with no decoding did not receive \"async\": $output_default\n" );
+			exit( 1 );
+		}
+		echo "OK: Image with neither attribute received fetchpriority=\"high\" and decoding=\"async\"\n";
+	}
+
+	/**
+	 * Builds an image-slider block array for LCP tests.
+	 *
+	 * @param string $block_id Block ID.
+	 * @return array
+	 */
+	private function slider_block( string $block_id ): array {
+		return [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [ 'blockId' => $block_id ],
+		];
+	}
+
+	/**
+	 * Verify an attribute-value payload cannot become a real attribute (stored XSS).
+	 *
+	 * @return void
+	 */
+	public function test_lcp_xss_payload_creates_no_attribute(): void {
+		global $is_admin_mock, $is_feed_mock, $is_rest_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+		$is_rest_mock  = false;
+		StyleGenerator::reset_styles();
+
+		$content = '<div class="swiper"><div class="swiper-wrapper"><div class="swiper-slide">' .
+			'<img src="https://example.com/x.jpg" alt="loading=\'lazy\' onerror=alert(1)">' .
+			'</div></div></div>';
+
+		$output = StyleGenerator::getInstance()->collect_and_render_dynamic_styles( $content, $this->slider_block( 'gslider-xss' ) );
+
+		$processor = new WP_HTML_Tag_Processor( $output );
+		$processor->next_tag( 'img' );
+
+		if ( null !== $processor->get_attribute( 'onerror' ) ) {
+			fwrite( STDERR, "FAIL: XSS payload created a real onerror attribute: $output\n" );
+			exit( 1 );
+		}
+		if ( "loading='lazy' onerror=alert(1)" !== $processor->get_attribute( 'alt' ) ) {
+			fwrite( STDERR, "FAIL: alt attribute value was modified: $output\n" );
+			exit( 1 );
+		}
+		if ( 'high' !== $processor->get_attribute( 'fetchpriority' ) || null !== $processor->get_attribute( 'loading' ) ) {
+			fwrite( STDERR, "FAIL: Expected fetchpriority=high and no loading attribute to be invented: $output\n" );
+			exit( 1 );
+		}
+		echo "OK: alt=\"loading='lazy' onerror=alert(1)\" creates no new attribute and alt stays intact\n";
+	}
+
+	/**
+	 * Verify the testimonial rating icon is skipped and the real slide image is chosen.
+	 *
+	 * @return void
+	 */
+	public function test_lcp_skips_rating_icon(): void {
+		StyleGenerator::reset_styles();
+
+		$content = '<div class="swiper"><div class="swiper-wrapper"><div class="swiper-slide">' .
+			'<div class="gslider-testimonial-rating-icon"><img src="https://example.com/star.png" alt="star" loading="lazy"></div>' .
+			'<div class="gslider-testimonial-image"><img src="https://example.com/avatar.jpg" alt="Jane" loading="lazy"></div>' .
+			'</div></div></div>';
+
+		$output = StyleGenerator::getInstance()->collect_and_render_dynamic_styles(
+			$content,
+			[
+				'blockName' => 'gslider-blocks/testimonial',
+				'attrs'     => [ 'blockId' => 'gslider-testimonial' ],
+			]
+		);
+
+		$processor = new WP_HTML_Tag_Processor( $output );
+		$processor->next_tag( 'img' );
+		if ( null !== $processor->get_attribute( 'fetchpriority' ) || 'lazy' !== $processor->get_attribute( 'loading' ) ) {
+			fwrite( STDERR, "FAIL: Testimonial rating icon was optimized: $output\n" );
+			exit( 1 );
+		}
+		$processor->next_tag( 'img' );
+		if ( 'high' !== $processor->get_attribute( 'fetchpriority' ) || 'eager' !== $processor->get_attribute( 'loading' ) || 'async' !== $processor->get_attribute( 'decoding' ) ) {
+			fwrite( STDERR, "FAIL: Real testimonial image was not optimized: $output\n" );
+			exit( 1 );
+		}
+		echo "OK: Rating icon untouched, first real slide image optimized\n";
+	}
+
+	/**
+	 * Verify images outside slide markup are ignored and do not consume the once-per-page guard.
+	 *
+	 * @return void
+	 */
+	public function test_lcp_skips_non_slide_markup(): void {
+		StyleGenerator::reset_styles();
+		$generator = StyleGenerator::getInstance();
+
+		$no_slide = $generator->collect_and_render_dynamic_styles( '<div><img src="https://example.com/a.jpg" loading="lazy"></div>', $this->slider_block( 'gslider-noslide' ) );
+		if ( false !== strpos( $no_slide, 'fetchpriority' ) ) {
+			fwrite( STDERR, "FAIL: Image outside .swiper-slide was optimized\n" );
+			exit( 1 );
+		}
+
+		$later = $generator->collect_and_render_dynamic_styles(
+			'<div class="swiper-slide"><img src="https://example.com/b.jpg" loading="lazy"></div>',
+			$this->slider_block( 'gslider-slide' )
+		);
+		if ( false === strpos( $later, 'fetchpriority="high"' ) ) {
+			fwrite( STDERR, "FAIL: Slide image after non-slide markup was not optimized\n" );
+			exit( 1 );
+		}
+		echo "OK: Non-slide images are ignored; first real slide image still optimized\n";
+	}
+
+	/**
+	 * Test 9: Verify 'gslider_lcp_optimize' filter allows disabling or customizing LCP optimization.
+	 *
+	 * @return void
+	 */
+	public function test_gslider_lcp_optimize_filter(): void {
+		global $is_admin_mock, $is_feed_mock, $is_rest_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+		$is_rest_mock  = false;
+
+		StyleGenerator::reset_styles();
+		$generator = StyleGenerator::getInstance();
+
+		// Add filter to disable LCP optimization.
+		add_filter( 'gslider_lcp_optimize', '__return_false' );
+
+		$block_id = 'gslider-filtered-slider';
+		$block    = [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [
+				'blockId'    => $block_id,
+				'blockStyle' => ".{$block_id} { height: 400px; }",
+			],
+		];
+
+		$content = '<div class="gslider-image-slider-wrapper ' . $block_id . '">' .
+			'<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide"><img src="https://example.com/filtered.jpg" alt="Filtered" loading="lazy" /></div>' .
+			'</div></div></div>';
+
+		$output = $generator->collect_and_render_dynamic_styles( $content, $block );
+
+		// Should retain loading="lazy" and NOT have fetchpriority="high" because filter returned false.
+		if ( false !== strpos( $output, 'fetchpriority' ) ) {
+			fwrite( STDERR, "FAIL: LCP optimization ran despite gslider_lcp_optimize filter returning false\n" );
+			exit( 1 );
+		}
+		if ( false === strpos( $output, 'loading="lazy"' ) ) {
+			fwrite( STDERR, "FAIL: Image lost loading=\"lazy\" despite filter returning false\n" );
+			exit( 1 );
+		}
+		echo "OK: 'gslider_lcp_optimize' filter returning false successfully disables LCP image optimization\n";
+
+		// Remove filter and test with filter returning true.
+		remove_filter( 'gslider_lcp_optimize', '__return_false' );
+		StyleGenerator::reset_styles();
+
+		$output_enabled = $generator->collect_and_render_dynamic_styles( $content, $block );
+		if ( false === strpos( $output_enabled, 'fetchpriority="high"' ) ) {
+			fwrite( STDERR, "FAIL: LCP optimization did not run when gslider_lcp_optimize was unhooked\n" );
+			exit( 1 );
+		}
+		echo "OK: 'gslider_lcp_optimize' filter default true successfully performs LCP optimization\n";
+	}
+
+	/**
+	 * Verify ensure_image_dimensions injects width and height on slide images.
 	 *
 	 * @return void
 	 */
@@ -369,14 +726,17 @@ class StyleGeneratorTest {
 
 		$attachment_metadata_mock = [
 			42 => [
+				'file'   => '2026/01/photo1.jpg',
 				'width'  => 800,
 				'height' => 600,
 			],
 			43 => [
+				'file'   => '2026/01/photo2.jpg',
 				'width'  => 400,
 				'height' => 300,
 			],
 			44 => [
+				'file'   => '2026/01/photo3.jpg',
 				'width'  => 1200,
 				'height' => 800,
 			],
@@ -403,65 +763,297 @@ class StyleGeneratorTest {
 					],
 					[
 						'id'  => 44,
-						'url' => 'https://example.com/wp-content/uploads/2026/01/photo_cdn.jpg?w=800&fit=crop',
+						'url' => 'https://example.com/wp-content/uploads/2026/01/photo3.jpg',
+					],
+					[
+						// CodeRabbit safety test: non-string url or malformed item should not trigger TypeError
+						'id'  => 45,
+						'url' => [ 'malformed' => 'array' ],
 					],
 				],
 			],
 		];
 
-		// Image 1 has no width or height (self-closing). Image 2 already has width and height. Image 3 is a duplicate of Image 1 (ticker loop). Image 4 has CDN query string.
-		$content = '<div class="gslider-image-slider-wrapper">' .
+		$content = '<div class="wp-block-gslider-blocks-image-slider gslider-image-slider-wrapper">' .
 			'<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide"><img src="https://example.com/template-placeholder.jpg" alt="Template" /></div>' .
 			'<div class="swiper-slide"><img src="https://example.com/wp-content/uploads/2026/01/photo1.jpg" alt="Photo 1" /></div>' .
-			'<div class="swiper-slide"><img src="https://example.com/wp-content/uploads/2026/01/photo2.jpg" alt="Photo 2" width="400" height="300"></div>' .
-			'<div class="swiper-slide"><img src="https://example.com/wp-content/uploads/2026/01/photo1.jpg" alt="Photo 1 Dup"></div>' .
-			'<div class="swiper-slide"><img src="https://example.com/wp-content/uploads/2026/01/photo_cdn.jpg?w=800&fit=crop" alt="Photo CDN"></div>' .
+			'<div class="swiper-slide"><img src="https://example.com/wp-content/uploads/2026/01/photo2.jpg" alt="Photo 2" width="500" height="400" /></div>' .
+			'<div class="swiper-slide"><img src="https://example.com/wp-content/uploads/2026/01/photo3.jpg" alt="Photo 3" /></div>' .
 			'</div></div></div>';
 
 		$output = $generator->ensure_image_dimensions( $content, $block );
 
-		// Check CDN image got width="1200" and height="800" despite query string.
-		if ( ! strpos( $output, 'photo_cdn.jpg?w=800&fit=crop" alt="Photo CDN" width="1200" height="800"' ) ) {
-			fwrite( STDERR, "FAIL: CDN image with query parameters did not have dimensions injected: $output\n" );
+		// Image 1: dimensions injected.
+		if ( ! preg_match( '/<img(?=[^>]*photo1\.jpg)(?=[^>]*\swidth="800")(?=[^>]*\sheight="600")[^>]*>/i', $output ) ) {
+			fwrite( STDERR, "FAIL: ensure_image_dimensions failed to inject width=\"800\" height=\"600\" on photo1.jpg\n" );
 			exit( 1 );
 		}
-		echo "OK: ensure_image_dimensions handles URLs with query parameters and ignores negative IDs\n";
 
-		// Check both photo 1 instances got width="800" and height="600".
-		$photo1_count = substr_count( $output, 'width="800" height="600"' );
-		if ( 2 !== $photo1_count ) {
-			fwrite( STDERR, "FAIL: Both photo 1 instances did not have dimensions injected (found $photo1_count): $output\n" );
+		// Image 2: existing dimensions preserved (not overwritten).
+		if ( ! preg_match( '/<img(?=[^>]*photo2\.jpg)(?=[^>]*\swidth="500")(?=[^>]*\sheight="400")[^>]*>/i', $output ) ) {
+			fwrite( STDERR, "FAIL: ensure_image_dimensions failed to preserve existing width=\"500\" height=\"400\" on photo2.jpg\n" );
 			exit( 1 );
 		}
-		if ( preg_match( '/\/\s+[a-z]/i', $output ) ) {
-			fwrite( STDERR, "FAIL: Malformed slash in middle of attributes in ensure_image_dimensions: $output\n" );
+
+		// Image 3: dimensions injected.
+		if ( ! preg_match( '/<img(?=[^>]*photo3\.jpg)(?=[^>]*\swidth="1200")(?=[^>]*\sheight="800")[^>]*>/i', $output ) ) {
+			fwrite( STDERR, "FAIL: ensure_image_dimensions failed to inject width=\"1200\" height=\"800\" on photo3.jpg\n" );
 			exit( 1 );
 		}
-		echo "OK: ensure_image_dimensions injects dimensions on all duplicate images and handles self-closing tags\n";
 
-		// Check photo 2 did not get duplicate width or height attributes.
-		if ( substr_count( $output, 'photo2.jpg' ) > 0 ) {
-			preg_match( '/<img[^>]*photo2\.jpg[^>]*>/i', $output, $photo2_match );
-			if ( ! empty( $photo2_match[0] ) ) {
-				if ( substr_count( $photo2_match[0], 'width=' ) > 1 || substr_count( $photo2_match[0], 'height=' ) > 1 ) {
-					fwrite( STDERR, "FAIL: Photo 2 received duplicate dimensions: {$photo2_match[0]}\n" );
-					exit( 1 );
-				}
-			}
+		// Template mock image: no dimensions injected.
+		if ( preg_match( '/<img[^>]*template-placeholder\.jpg[^>]*width=/i', $output ) ) {
+			fwrite( STDERR, "FAIL: ensure_image_dimensions should not inject dimensions for negative attachment IDs\n" );
+			exit( 1 );
 		}
-		echo "OK: ensure_image_dimensions does not duplicate existing dimensions\n";
 
-		// Test admin bypass.
+		echo "OK: ensure_image_dimensions injects width/height from attachment metadata\n";
+
+		// Admin bypass test.
 		$is_admin_mock = true;
 		$admin_output  = $generator->ensure_image_dimensions( $content, $block );
+		$is_admin_mock = false;
 		if ( $admin_output !== $content ) {
-			fwrite( STDERR, "FAIL: ensure_image_dimensions did not bypass in admin context\n" );
+			fwrite( STDERR, "FAIL: ensure_image_dimensions should bypass in admin context\n" );
 			exit( 1 );
 		}
-		echo "OK: ensure_image_dimensions is safely bypassed in admin\n";
-		$is_admin_mock = false;
+		echo "OK: ensure_image_dimensions bypasses in admin context\n";
+
+		// Feed bypass test.
+		$is_feed_mock = true;
+		$feed_output  = $generator->ensure_image_dimensions( $content, $block );
+		$is_feed_mock = false;
+		if ( $feed_output !== $content ) {
+			fwrite( STDERR, "FAIL: ensure_image_dimensions should bypass in feed context\n" );
+			exit( 1 );
+		}
+		echo "OK: ensure_image_dimensions bypasses in feed context\n";
 	}
 
+	/**
+	 * Verify ensure_image_dimensions edge cases: intermediate sizes, data-* attributes,
+	 * non-slide images and same-basename images from another folder.
+	 *
+	 * @return void
+	 */
+	public function test_ensure_image_dimensions_edge_cases(): void {
+		global $is_admin_mock, $is_feed_mock, $attachment_metadata_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+
+		$attachment_metadata_mock = [
+			50 => [
+				'file'   => '2026/02/hero.jpg',
+				'width'  => 2000,
+				'height' => 1000,
+				'sizes'  => [
+					'medium' => [
+						'file'   => 'hero-300x300.jpg',
+						'width'  => 300,
+						'height' => 300,
+					],
+				],
+			],
+			51 => [
+				'file'   => '2026/02/logo.png',
+				'width'  => 640,
+				'height' => 320,
+			],
+		];
+
+		$generator = StyleGenerator::getInstance();
+		$block     = [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [
+				'blockId' => 'gslider-img-edge',
+				'images'  => [
+					[
+						'id'  => 50,
+						'url' => 'https://example.com/wp-content/uploads/2026/02/hero-300x300.jpg',
+					],
+					[
+						'id'  => 51,
+						'url' => 'https://example.com/wp-content/uploads/2026/02/logo.png',
+					],
+				],
+			],
+		];
+
+		$content = '<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide"><img src="https://example.com/wp-content/uploads/2026/02/hero-300x300.jpg" alt="a > b" /></div>' .
+			'<div class="swiper-slide"><img data-width="9" data-height="9" src="https://example.com/wp-content/uploads/2026/02/logo.png" alt="Logo"></div>' .
+			'<div class="swiper-slide"><img src="https://example.com/wp-content/plugins/x/logo.png" class="nav-icon" alt="Nav"></div>' .
+			'</div></div>';
+
+		$output = $generator->ensure_image_dimensions( $content, $block );
+
+		if ( ! preg_match( '/<img(?=[^>]*hero-300x300\.jpg)(?=[^>]*\swidth="300")(?=[^>]*\sheight="300")/i', $output ) ) {
+			fwrite( STDERR, "FAIL: intermediate size did not get its own 300x300 dimensions. Expected width=\"300\" height=\"300\" on hero-300x300.jpg. Actual: $output\n" );
+			exit( 1 );
+		}
+		if ( false !== strpos( $output, 'width="2000"' ) ) {
+			fwrite( STDERR, "FAIL: full-size dimensions were injected on an intermediate size. Expected no width=\"2000\". Actual: $output\n" );
+			exit( 1 );
+		}
+		if ( ! preg_match( '/<img(?=[^>]*uploads\/2026\/02\/logo\.png)(?=[^>]*\swidth="640")(?=[^>]*\sheight="320")(?=[^>]*data-width="9")/i', $output ) ) {
+			fwrite( STDERR, "FAIL: data-width/data-height blocked real width/height injection. Expected width=\"640\" height=\"320\" and data-width=\"9\". Actual: $output\n" );
+			exit( 1 );
+		}
+		if ( 1 !== substr_count( $output, 'width="640"' ) ) {
+			fwrite( STDERR, "FAIL: same-basename image from another folder got slide dimensions. Expected exactly 1 occurrence of width=\"640\". Actual: $output\n" );
+			exit( 1 );
+		}
+
+		$outside        = '<div class="gslider-nav"><img src="https://example.com/wp-content/uploads/2026/02/logo.png" alt="x"></div>';
+		$outside_actual = $generator->ensure_image_dimensions( $outside, $block );
+		if ( $outside !== $outside_actual ) {
+			fwrite( STDERR, "FAIL: image outside .swiper-slide was modified. Expected: $outside. Actual: $outside_actual\n" );
+			exit( 1 );
+		}
+
+		echo "OK: ensure_image_dimensions handles sizes, data-* attributes and non-slide images\n";
+	}
+
+	/**
+	 * Verify ensure_image_dimensions injects dimensions on testimonial author, quote, and rating images.
+	 *
+	 * @return void
+	 */
+	public function test_ensure_image_dimensions_testimonial_author_image(): void {
+		global $is_admin_mock, $is_feed_mock, $attachment_metadata_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+
+		$attachment_metadata_mock = [
+			60 => [
+				'file'   => '2026/02/author.jpg',
+				'width'  => 400,
+				'height' => 400,
+			],
+			61 => [
+				'file'   => '2026/02/quote-mark.png',
+				'width'  => 80,
+				'height' => 80,
+			],
+			62 => [
+				'file'   => '2026/02/star.png',
+				'width'  => 24,
+				'height' => 24,
+			],
+		];
+
+		$generator = StyleGenerator::getInstance();
+		$block     = [
+			'blockName' => 'gslider-blocks/testimonial',
+			'attrs'     => [
+				'blockId'       => 'gslider-test-author',
+				'quoteImageID'  => 61,
+				'quoteImageUrl' => 'https://example.com/wp-content/uploads/2026/02/quote-mark.png',
+				'sliderItems'   => [
+					[
+						'authorName'  => 'Jane Doe',
+						'authorImage' => [
+							'id'  => 60,
+							'url' => 'https://example.com/wp-content/uploads/2026/02/author.jpg',
+						],
+						'ratingImage' => [
+							'id'  => 62,
+							'url' => 'https://example.com/wp-content/uploads/2026/02/star.png',
+						],
+					],
+				],
+			],
+		];
+
+		$content = '<div class="wp-block-gslider-blocks-testimonial gslider-testimonial-wrapper">' .
+			'<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide">' .
+			'<div class="gslider-testimonial-quote-icon-wrapper">' .
+			'<img src="https://example.com/wp-content/uploads/2026/02/quote-mark.png" alt="Quote" />' .
+			'</div>' .
+			'<div class="gslider-testimonial-author-image-wrapper">' .
+			'<img src="https://example.com/wp-content/uploads/2026/02/author.jpg" alt="Jane" class="gslider-testimonial-author-image" />' .
+			'</div>' .
+			'<div class="gslider-testimonial-rating-wrapper">' .
+			'<div class="gslider-testimonial-rating-icon">' .
+			'<img src="https://example.com/wp-content/uploads/2026/02/star.png" alt="Star" />' .
+			'</div>' .
+			'</div>' .
+			'</div>' .
+			'</div>' .
+			'</div></div></div>';
+
+		$output = $generator->ensure_image_dimensions( $content, $block );
+
+		if ( ! preg_match( '/<img(?=[^>]*author\.jpg)(?=[^>]*\swidth="400")(?=[^>]*\sheight="400")[^>]*>/i', $output ) ) {
+			fwrite( STDERR, "FAIL: Testimonial author image did not receive injected width=\"400\" height=\"400\". Expected dimensions on author.jpg. Actual: $output\n" );
+			exit( 1 );
+		}
+
+		if ( ! preg_match( '/<img(?=[^>]*quote-mark\.png)(?=[^>]*\swidth="80")(?=[^>]*\sheight="80")[^>]*>/i', $output ) ) {
+			fwrite( STDERR, "FAIL: Testimonial quote image did not receive injected width=\"80\" height=\"80\". Expected dimensions on quote-mark.png. Actual: $output\n" );
+			exit( 1 );
+		}
+
+		if ( ! preg_match( '/<img(?=[^>]*star\.png)(?=[^>]*\swidth="24")(?=[^>]*\sheight="24")[^>]*>/i', $output ) ) {
+			fwrite( STDERR, "FAIL: Testimonial rating image did not receive injected width=\"24\" height=\"24\". Expected dimensions on star.png. Actual: $output\n" );
+			exit( 1 );
+		}
+
+		echo "OK: ensure_image_dimensions injects dimensions on testimonial author, quote, and rating images\n";
+	}
+
+	/**
+	 * Test 11: Verify reset_styles() cleans all internal state.
+	 *
+	 * @return void
+	 */
+	public function test_reset_styles(): void {
+		global $is_admin_mock, $is_feed_mock, $is_rest_mock;
+		$is_admin_mock = false;
+		$is_feed_mock  = false;
+		$is_rest_mock  = false;
+
+		$generator = StyleGenerator::getInstance();
+		StyleGenerator::reset_styles();
+
+		$styles = StyleGenerator::get_collected_styles();
+		if ( ! empty( $styles ) ) {
+			fwrite( STDERR, "FAIL: reset_styles() did not clear collected styles\n" );
+			exit( 1 );
+		}
+
+		$block_id = 'gslider-reset-test';
+		$block    = [
+			'blockName' => 'gslider-blocks/image-slider',
+			'attrs'     => [
+				'blockId'    => $block_id,
+				'blockStyle' => ".{$block_id} { background: #fff; }",
+			],
+		];
+		$content  = '<div class="wp-block-gslider-blocks-image-slider ' . $block_id . '">' .
+			'<div class="swiper"><div class="swiper-wrapper">' .
+			'<div class="swiper-slide"><img src="https://example.com/reset.jpg" alt="Reset" loading="lazy" /></div>' .
+			'</div></div></div>';
+
+		// First render sets printed-ID and LCP state.
+		$generator->collect_and_render_dynamic_styles( $content, $block );
+		StyleGenerator::reset_styles();
+
+		// After reset, re-rendering must output the style tag and apply LCP optimization again.
+		$output = $generator->collect_and_render_dynamic_styles( $content, $block );
+		if ( false === strpos( $output, '<style id="gslider-style-' . $block_id . '">' ) ) {
+			fwrite( STDERR, "FAIL: reset_styles() did not clear printed block IDs\n" );
+			exit( 1 );
+		}
+		if ( false === strpos( $output, 'fetchpriority="high"' ) || false === strpos( $output, 'reset.jpg' ) ) {
+			fwrite( STDERR, "FAIL: reset_styles() did not clear the LCP flag\n" );
+			exit( 1 );
+		}
+
+		echo "OK: reset_styles() clears collected styles, printed block IDs, and the LCP flag\n";
+	}
 	/**
 	 * Test 9: Verify CSP nonce injection on dynamic <style> tags (#314).
 	 *
@@ -530,6 +1122,7 @@ class StyleGeneratorTest {
 
 		remove_all_filters( 'wp_csp_nonce' );
 	}
+
 
 	/**
 	 * Test 10: Verify external dynamic CSS file caching and cache management (#314).
@@ -607,6 +1200,7 @@ class StyleGeneratorTest {
 		remove_all_filters( 'gslider_enable_file_cache' );
 	}
 
+
 	/**
 	 * Test 11: Verify print_footer_styles() deduplicates inline printed styles and respects file caching.
 	 *
@@ -645,22 +1239,6 @@ class StyleGeneratorTest {
 		echo "OK: print_footer_styles() does not duplicate styles already rendered inline\n";
 	}
 
-	/**
-	 * Test 12: Verify reset_styles() cleans all internal state.
-	 *
-	 * @return void
-	 */
-	public function test_reset_styles(): void {
-		$generator = StyleGenerator::getInstance();
-		StyleGenerator::reset_styles();
-
-		$styles = StyleGenerator::get_collected_styles();
-		if ( ! empty( $styles ) ) {
-			fwrite( STDERR, "FAIL: reset_styles() did not clear collected styles\n" );
-			exit( 1 );
-		}
-		echo "OK: reset_styles() clears collected styles and flags\n";
-	}
 
 	/**
 	 * Test 13: Verify option-driven dynamic CSS delivery and render-time cache retention (#314).
@@ -772,6 +1350,7 @@ class StyleGeneratorTest {
 		delete_option( 'gslider_settings' );
 	}
 
+
 	/**
 	 * Test 14: Verify classic theme pre-collection at wp_enqueue_scripts (#314).
 	 *
@@ -816,7 +1395,8 @@ class StyleGeneratorTest {
 		$enqueued_styles = [];
 
 		// Post containing only the synced pattern ref and GSlider block marker.
-		$wp_post_content = '<!-- wp:gslider-blocks/pattern-wrapper --> <!-- wp:block {"ref":42} /-->';
+		// Real-world shape: post containing only the synced pattern ref without any wrapping GSlider comment.
+		$wp_post_content = '<!-- wp:block {"ref":42} /-->';
 		$generator->pre_collect_queried_post_styles();
 
 		if ( empty( $enqueued_styles[ $handle ] ) ) {
@@ -829,6 +1409,8 @@ class StyleGeneratorTest {
 		$generator->clear_dynamic_css_cache();
 		delete_option( 'gslider_settings' );
 	}
+
+
 }
 
 // Standalone execution entrypoint.

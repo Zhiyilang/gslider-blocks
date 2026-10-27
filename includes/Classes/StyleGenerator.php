@@ -49,7 +49,7 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
          *
          * Prevents duplicate <style> tags for the same block ID (e.g. in query loops or synced patterns).
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @var array<string, bool>
          */
@@ -58,11 +58,20 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
         /**
          * Track whether the LCP image priority has been applied to the first slide on the page.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @var bool
          */
         private static $lcp_optimized = false;
+
+        /**
+         * Depth counter for headless renders that must keep inline styles inside REST responses.
+         *
+         * @since 1.2.0
+         *
+         * @var int
+         */
+        private static $headless_depth = 0;
 
         /**
          * Registers hooks for style collection, sanitization, and rendering.
@@ -138,8 +147,9 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
                 return;
             }
 
-            // Fast exit if no GSlider block comments are present in post content.
-            if ( false === strpos( $post->post_content, '<!-- wp:gslider-blocks/' ) ) {
+            // Fast exit if neither GSlider blocks nor synced pattern refs are present in post content.
+            if ( false === strpos( $post->post_content, '<!-- wp:gslider-blocks/' )
+                && false === strpos( $post->post_content, '<!-- wp:block ' ) ) {
                 return;
             }
 
@@ -186,7 +196,8 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
                         $visited_refs[ $ref_id ] = true;
                         $ref_post = get_post( $ref_id );
                         if ( $ref_post && ! empty( $ref_post->post_content ) && is_string( $ref_post->post_content ) ) {
-                            if ( false !== strpos( $ref_post->post_content, '<!-- wp:gslider-blocks/' ) ) {
+                            if ( false !== strpos( $ref_post->post_content, '<!-- wp:gslider-blocks/' )
+                                || false !== strpos( $ref_post->post_content, '<!-- wp:block ' ) ) {
                                 $ref_blocks = parse_blocks( $ref_post->post_content );
                                 if ( ! empty( $ref_blocks ) && is_array( $ref_blocks ) ) {
                                     $this->collect_styles_from_block_list( $ref_blocks, $visited_refs );
@@ -220,202 +231,406 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
                 return $block_content;
             }
 
-            // Exclude styles and optimizations from RSS feeds to prevent feed validation errors.
+            // Never print styles or touch markup inside RSS/Atom feeds (#312).
             if ( function_exists( 'is_feed' ) && is_feed() ) {
                 return $block_content;
             }
 
-            if ( false !== strpos( $block['blockName'], 'gslider-blocks/' ) ) {
+            $headless = self::$headless_depth > 0;
+
+            // Generic REST responses (e.g. content.rendered) get no inline CSS (#312), except
+            // the plugin's own headless renders (BlockParser), which need per-slide CSS.
+            if ( ! $headless && self::is_rest_request() ) {
+                return $block_content;
+            }
+
+            if ( false === strpos( $block['blockName'], 'gslider-blocks/' ) ) {
+                return $block_content;
+            }
+
+            if ( ! $headless ) {
                 // Apply LCP image priority to the first slide image on the page (frontend only).
                 $block_content = $this->optimize_lcp_image( $block_content );
 
                 // Ensure explicit width and height attributes on slide images to eliminate CLS (#391).
                 $block_content = $this->ensure_image_dimensions( $block_content, $block );
+            }
 
-                if ( ! empty( $block['attrs']['blockStyle'] ) ) {
-                    $block_id = isset( $block['attrs']['blockId'] ) ?
-                        sanitize_key( $block['attrs']['blockId'] ) :
-                        'gslider-blocks-' . md5( serialize( $block['attrs'] ) );
+            if ( empty( $block['attrs']['blockStyle'] ) ) {
+                return $block_content;
+            }
 
-                    $raw_style = is_string( $block['attrs']['blockStyle'] ) ? $block['attrs']['blockStyle'] : '';
+            $block_id = isset( $block['attrs']['blockId'] ) ?
+                sanitize_key( $block['attrs']['blockId'] ) :
+                'gslider-blocks-' . md5( serialize( $block['attrs'] ) );
 
-                    // Strictly sanitize CSS to prevent arbitrary CSS injection.
-                    $clean_style = $this->sanitize_css( $raw_style, $block_id );
+            $raw_style = is_string( $block['attrs']['blockStyle'] ) ? $block['attrs']['blockStyle'] : '';
 
-                    if ( ! empty( $clean_style ) ) {
-                        self::$styles[ $block_id ] = $clean_style;
+            // Strictly sanitize CSS to prevent arbitrary CSS injection.
+            $clean_style = $this->sanitize_css( $raw_style, $block_id );
 
-                        // Check if external file caching is enabled (#314).
-                        if ( $this->is_file_cache_enabled() ) {
-                            $enqueued = $this->enqueue_dynamic_css_file( $block_id, $clean_style );
-                            if ( $enqueued ) {
-                                return $block_content;
-                            }
-                        }
+            if ( empty( $clean_style ) ) {
+                return $block_content;
+            }
 
-                        // Deduplicate: only render the inline <style> tag once per unique block ID per request.
-                        if ( empty( self::$printed[ $block_id ] ) ) {
-                            self::$printed[ $block_id ] = true;
-                            $nonce      = $this->get_csp_nonce();
-                            $nonce_attr = ! empty( $nonce ) ? ' nonce="' . esc_attr( $nonce ) . '"' : '';
-                            $style_tag  = '<style id="gslider-style-' . esc_attr( $block_id ) . '"' . $nonce_attr . '>' . $clean_style . '</style>';
-                            return $style_tag . $block_content;
-                        }
-                    }
+            self::$styles[ $block_id ] = $clean_style;
+
+            // Check if external file caching is enabled (#314).
+            // Headless renders always use inline style tags so consumer gets per-slide CSS.
+            if ( ! $headless && $this->is_file_cache_enabled() ) {
+                $enqueued = $this->enqueue_dynamic_css_file( $block_id, $clean_style );
+                if ( $enqueued ) {
+                    return $block_content;
                 }
             }
 
-            return $block_content;
+            // Headless slide HTML is consumed piece by piece, so every slide keeps its own style tag.
+            // On normal pages, render the <style> tag only once per unique block ID per request.
+            if ( ! $headless ) {
+                if ( ! empty( self::$printed[ $block_id ] ) ) {
+                    return $block_content;
+                }
+                self::$printed[ $block_id ] = true;
+            }
+
+            $nonce      = $this->get_csp_nonce();
+            $nonce_attr = ! empty( $nonce ) ? ' nonce="' . esc_attr( $nonce ) . '"' : '';
+            $style_tag  = '<style id="gslider-style-' . esc_attr( $block_id ) . '"' . $nonce_attr . '>' . $clean_style . '</style>';
+
+            return $style_tag . $block_content;
         }
 
         /**
-         * Prioritizes the first slide image of the first GSlider block on the page for LCP.
+         * Renders a block for the plugin's headless REST output while keeping its inline styles.
          *
-         * Injects fetchpriority="high", removes loading="lazy" (sets loading="eager"),
-         * and ensures decoding="async" on the first <img> tag of the first slider.
+         * Used by BlockParser::normalize_flexi_content() so /gslider/v1 consumers still receive
+         * per-slide CSS even though generic REST responses are stripped of inline styles.
          *
-         * @since 1.2.1
+         * @since 1.2.0
+         *
+         * @param array $block Parsed block array.
+         * @return string Rendered block HTML including scoped <style> tags.
+         */
+        public static function render_block_with_styles( array $block ): string {
+            self::$headless_depth++;
+
+            try {
+                $html = render_block( $block );
+            } finally {
+                self::$headless_depth--;
+            }
+
+            return is_string( $html ) ? $html : '';
+        }
+
+        /**
+         * Determines whether the current request is a WordPress REST API request.
+         *
+         * Deliberately does not use wp_is_json_request(), which is also true for
+         * front-end AJAX loaders that send a JSON Accept header.
+         *
+         * @since 1.2.0
+         *
+         * @return bool True when serving a REST API request.
+         */
+        private static function is_rest_request(): bool {
+            if ( function_exists( 'wp_is_serving_rest_request' ) ) {
+                return (bool) wp_is_serving_rest_request();
+            }
+
+            return defined( 'REST_REQUEST' ) && REST_REQUEST;
+        }
+
+        /**
+         * Prioritizes the first real slide image of the first GSlider slider on the page for LCP.
+         *
+         * Uses WP_HTML_Tag_Processor so attribute values are never rewritten as raw text.
+         * Sets fetchpriority="high" and decoding="async", and switches loading="lazy" to
+         * loading="eager". Images outside a slide and testimonial rating icons are skipped.
+         *
+         * @since 1.2.0
          *
          * @param string $block_content The block HTML content.
-         * @return string Optimized block HTML content.
+         * @return string Optimized block HTML content, or the original HTML when nothing applies.
          */
         public function optimize_lcp_image( string $block_content ): string {
-            if ( self::$lcp_optimized || empty( $block_content ) ) {
+            if ( self::$lcp_optimized || '' === $block_content ) {
                 return $block_content;
             }
 
             // Only run on frontend page loads (skip admin, REST requests, and feeds).
-            if ( is_admin() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) || ( function_exists( 'wp_is_json_request' ) && wp_is_json_request() ) ) {
+            if ( is_admin() || self::is_rest_request() || ( function_exists( 'is_feed' ) && is_feed() ) ) {
                 return $block_content;
             }
 
-            // Find the first <img> tag in the slider block content.
-            if ( preg_match( '/<img\b([^>]*)>/i', $block_content, $matches, PREG_OFFSET_CAPTURE ) ) {
-                $full_img_tag = $matches[0][0];
-                $attributes   = $matches[1][0];
-                $offset       = $matches[0][1];
-
-                $is_self_closing = '/' === substr( trim( $attributes ), -1 );
-                $new_attributes  = rtrim( $attributes, " /\t\n\r\0\x0B" );
-
-                // 1. Ensure loading="eager" instead of loading="lazy".
-                if ( preg_match( '/\bloading\s*=\s*["\']lazy["\']/i', $new_attributes ) ) {
-                    $new_attributes = preg_replace( '/\bloading\s*=\s*["\']lazy["\']/i', 'loading="eager"', $new_attributes );
-                } elseif ( ! preg_match( '/\bloading\s*=/i', $new_attributes ) ) {
-                    $new_attributes .= ' loading="eager"';
-                }
-
-                // 2. Ensure fetchpriority="high".
-                if ( ! preg_match( '/\bfetchpriority\s*=/i', $new_attributes ) ) {
-                    $new_attributes .= ' fetchpriority="high"';
-                }
-
-                // 3. Ensure decoding="async".
-                if ( ! preg_match( '/\bdecoding\s*=/i', $new_attributes ) ) {
-                    $new_attributes .= ' decoding="async"';
-                }
-
-                $new_img_tag = '<img' . $new_attributes . ( $is_self_closing ? ' />' : '>' );
-
-                // Replace only the first occurrence.
-                $block_content = substr_replace( $block_content, $new_img_tag, $offset, strlen( $full_img_tag ) );
-                self::$lcp_optimized = true;
+            if ( false === stripos( $block_content, '<img' ) || false === strpos( $block_content, 'swiper-slide' ) ) {
+                return $block_content;
             }
 
-            return $block_content;
+            if ( ! class_exists( 'WP_HTML_Tag_Processor' ) ) {
+                return $block_content;
+            }
+
+            /**
+             * Filters whether to optimize the first slider image for LCP on the frontend.
+             *
+             * Return false to disable automatic fetchpriority="high", loading="eager"
+             * and decoding="async" on the first slide image.
+             *
+             * @since 1.2.0
+             *
+             * @param bool   $optimize      Whether to optimize the LCP image. Default true.
+             * @param string $block_content The block HTML content.
+             */
+            if ( ! apply_filters( 'gslider_lcp_optimize', true, $block_content ) ) {
+                return $block_content;
+            }
+
+            $processor    = new \WP_HTML_Tag_Processor( $block_content );
+            $in_slide     = false;
+            $after_rating = false;
+            $optimized    = false;
+
+            while ( $processor->next_tag() ) {
+                if ( $processor->is_tag_closer() ) {
+                    continue;
+                }
+
+                $classes = $processor->get_attribute( 'class' );
+                $classes = is_string( $classes ) ? ' ' . preg_replace( '/\s+/', ' ', $classes ) . ' ' : '';
+
+                if ( 'IMG' !== $processor->get_tag() ) {
+                    if ( false !== strpos( $classes, ' swiper-slide ' ) ) {
+                        $in_slide = true;
+                    }
+                    // Testimonial rating images sit directly inside .gslider-testimonial-rating-icon.
+                    $after_rating = false !== strpos( $classes, 'rating-icon' );
+                    continue;
+                }
+
+                if ( ! $in_slide || $after_rating || false !== strpos( $classes, 'rating' ) ) {
+                    $after_rating = false;
+                    continue;
+                }
+
+                if ( null === $processor->get_attribute( 'fetchpriority' ) ) {
+                    $processor->set_attribute( 'fetchpriority', 'high' );
+                }
+                if ( null === $processor->get_attribute( 'decoding' ) ) {
+                    $processor->set_attribute( 'decoding', 'async' );
+                }
+
+                $loading = $processor->get_attribute( 'loading' );
+                if ( is_string( $loading ) && 'lazy' === strtolower( $loading ) ) {
+                    $processor->set_attribute( 'loading', 'eager' );
+                }
+
+                $optimized = true;
+                break;
+            }
+
+            if ( ! $in_slide ) {
+                return $block_content;
+            }
+
+            // The first slider on the page has been handled (with or without an image).
+            self::$lcp_optimized = true;
+
+            return $optimized ? $processor->get_updated_html() : $block_content;
         }
 
         /**
          * Ensures explicit width and height HTML attributes on slide images to eliminate CLS (#391).
          *
-         * Inspects block attributes for attachment IDs (images or logos array) and
-         * injects missing width and height attributes based on WordPress attachment metadata.
+         * Uses WP_HTML_Tag_Processor (no regex) and only touches <img> tags inside
+         * .swiper-slide whose src points to the same file as a block image/logo/author/rating item.
+         * Dimensions come from the attachment size that matches the URL (full or an
+         * intermediate size), so cropped sizes keep their real aspect ratio.
          *
-         * @since 1.2.1
+         * @since 1.2.0
          *
          * @param string $block_content The block HTML content.
          * @param array  $block         The block data and attributes.
          * @return string Updated block HTML with width/height attributes on slide images.
          */
         public function ensure_image_dimensions( string $block_content, array $block ): string {
-            if ( empty( $block_content ) || empty( $block['attrs'] ) ) {
+            if ( '' === $block_content || empty( $block['attrs'] ) || ! is_array( $block['attrs'] ) ) {
                 return $block_content;
             }
 
-            if ( is_admin() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) || ( function_exists( 'is_feed' ) && is_feed() ) ) {
+            if ( is_admin() || self::is_rest_request() || ( function_exists( 'is_feed' ) && is_feed() ) ) {
                 return $block_content;
             }
 
-            // Extract images or logos array.
+            if ( false === stripos( $block_content, '<img' ) || ! class_exists( 'WP_HTML_Tag_Processor' ) ) {
+                return $block_content;
+            }
+
             $items = [];
             if ( ! empty( $block['attrs']['images'] ) && is_array( $block['attrs']['images'] ) ) {
                 $items = $block['attrs']['images'];
             } elseif ( ! empty( $block['attrs']['logos'] ) && is_array( $block['attrs']['logos'] ) ) {
                 $items = $block['attrs']['logos'];
+            } elseif ( ! empty( $block['attrs']['sliderItems'] ) && is_array( $block['attrs']['sliderItems'] ) ) {
+                foreach ( $block['attrs']['sliderItems'] as $slide ) {
+                    if ( ! empty( $slide['authorImage'] ) && is_array( $slide['authorImage'] ) ) {
+                        $items[] = $slide['authorImage'];
+                    }
+                    if ( ! empty( $slide['ratingImage'] ) && is_array( $slide['ratingImage'] ) ) {
+                        $items[] = $slide['ratingImage'];
+                    }
+                }
+                if ( ! empty( $block['attrs']['quoteImageUrl'] ) && ! empty( $block['attrs']['quoteImageID'] ) ) {
+                    $items[] = [
+                        'id'  => $block['attrs']['quoteImageID'],
+                        'url' => $block['attrs']['quoteImageUrl'],
+                    ];
+                }
             }
 
-            if ( empty( $items ) ) {
+            // Map normalized URL path => attachment ID.
+            $lookup = [];
+            foreach ( $items as $item ) {
+                if ( ! is_array( $item ) || empty( $item['id'] ) || ! is_numeric( $item['id'] ) || (int) $item['id'] <= 0 ) {
+                    continue;
+                }
+                if ( empty( $item['url'] ) || ! is_string( $item['url'] ) ) {
+                    continue;
+                }
+                $key = self::normalize_image_url( $item['url'] );
+                if ( '' !== $key && ! isset( $lookup[ $key ] ) ) {
+                    $lookup[ $key ] = (int) $item['id'];
+                }
+            }
+
+            if ( empty( $lookup ) ) {
                 return $block_content;
             }
 
-            foreach ( $items as $item ) {
-                if ( empty( $item['id'] ) || (int) $item['id'] <= 0 || empty( $item['url'] ) ) {
+            $processor = new \WP_HTML_Tag_Processor( $block_content );
+            $in_slide  = false;
+            $changed   = false;
+
+            while ( $processor->next_tag() ) {
+                if ( $processor->is_tag_closer() ) {
                     continue;
                 }
 
-                $attachment_id = (int) $item['id'];
-                $meta          = function_exists( 'wp_get_attachment_metadata' ) ? wp_get_attachment_metadata( $attachment_id ) : null;
-                $width         = ! empty( $meta['width'] ) ? (int) $meta['width'] : null;
-                $height        = ! empty( $meta['height'] ) ? (int) $meta['height'] : null;
-
-                if ( ! $width || ! $height ) {
-                    if ( function_exists( 'wp_get_attachment_image_src' ) ) {
-                        $src_data = wp_get_attachment_image_src( $attachment_id, 'full' );
-                        if ( ! empty( $src_data[1] ) && ! empty( $src_data[2] ) ) {
-                            $width  = (int) $src_data[1];
-                            $height = (int) $src_data[2];
-                        }
+                if ( 'IMG' !== $processor->get_tag() ) {
+                    $classes = $processor->get_attribute( 'class' );
+                    if ( is_string( $classes ) && false !== strpos( ' ' . preg_replace( '/\s+/', ' ', $classes ) . ' ', ' swiper-slide ' ) ) {
+                        $in_slide = true;
                     }
-                }
-
-                if ( ! $width || ! $height ) {
                     continue;
                 }
 
-                $escaped_url = preg_quote( $item['url'], '/' );
-                $pattern     = '/<img\b([^>]*src=["\']' . $escaped_url . '["\'][^>]*)>/i';
-
-                // If full URL match fails, try basename matching for protocol-relative or rewritten CDN URLs.
-                if ( ! preg_match( $pattern, $block_content ) ) {
-                    $url_path = function_exists( 'wp_parse_url' ) ? wp_parse_url( $item['url'], PHP_URL_PATH ) : parse_url( $item['url'], PHP_URL_PATH );
-                    $basename = ! empty( $url_path ) ? basename( $url_path ) : basename( $item['url'] );
-                    if ( ! empty( $basename ) ) {
-                        $escaped_basename = preg_quote( $basename, '/' );
-                        $pattern          = '/<img\b([^>]*src=["\'][^"\']*\/' . $escaped_basename . '(?:[?#][^"\']*)?["\'][^>]*)>/i';
-                    }
+                if ( ! $in_slide ) {
+                    continue;
                 }
 
-                $block_content = preg_replace_callback(
-                    $pattern,
-                    static function ( $matches ) use ( $width, $height ) {
-                        $attrs           = $matches[1];
-                        $is_self_closing = '/' === substr( trim( $attrs ), -1 );
-                        $new_attrs       = rtrim( $attrs, " /\t\n\r\0\x0B" );
+                $has_width  = null !== $processor->get_attribute( 'width' );
+                $has_height = null !== $processor->get_attribute( 'height' );
+                if ( $has_width && $has_height ) {
+                    continue;
+                }
 
-                        if ( ! preg_match( '/\bwidth\s*=/i', $new_attrs ) ) {
-                            $new_attrs .= ' width="' . $width . '"';
-                        }
-                        if ( ! preg_match( '/\bheight\s*=/i', $new_attrs ) ) {
-                            $new_attrs .= ' height="' . $height . '"';
-                        }
+                $src = $processor->get_attribute( 'src' );
+                if ( ! is_string( $src ) || '' === $src ) {
+                    continue;
+                }
 
-                        return '<img' . $new_attrs . ( $is_self_closing ? ' />' : '>' );
-                    },
-                    $block_content
-                );
+                $key = self::normalize_image_url( $src );
+                if ( ! isset( $lookup[ $key ] ) ) {
+                    continue;
+                }
+
+                $dimensions = self::get_image_dimensions_for_src( $src, $lookup[ $key ] );
+                if ( null === $dimensions ) {
+                    continue;
+                }
+
+                // Only add what is missing; never overwrite author values.
+                if ( ! $has_width ) {
+                    $processor->set_attribute( 'width', (string) $dimensions[0] );
+                }
+                if ( ! $has_height ) {
+                    $processor->set_attribute( 'height', (string) $dimensions[1] );
+                }
+                $changed = true;
             }
 
-            return $block_content;
+            return $changed ? $processor->get_updated_html() : $block_content;
+        }
+
+        /**
+         * Normalizes an image URL to "host/path" (no scheme, query or fragment) for matching.
+         *
+         * @since 1.2.0
+         *
+         * @param string $url Image URL.
+         * @return string Normalized key, or '' when the URL has no path.
+         */
+        private static function normalize_image_url( string $url ): string {
+            $url   = html_entity_decode( trim( $url ), ENT_QUOTES );
+            $parts = function_exists( 'wp_parse_url' ) ? wp_parse_url( $url ) : parse_url( $url );
+            if ( ! is_array( $parts ) || empty( $parts['path'] ) ) {
+                return '';
+            }
+            $host = isset( $parts['host'] ) ? strtolower( $parts['host'] ) : '';
+            return $host . '/' . ltrim( $parts['path'], '/' );
+        }
+
+        /**
+         * Returns [ width, height ] for the attachment size that the src points to.
+         *
+         * Uses wp_image_src_get_dimensions() (WP 5.5+) which matches the file name
+         * against the full image and every intermediate size. Falls back to the
+         * full-size metadata only when the src file name is the original file.
+         *
+         * @since 1.2.0
+         *
+         * @param string $src           Image src from the markup.
+         * @param int    $attachment_id Attachment ID.
+         * @return int[]|null Width and height, or null when unknown.
+         */
+        private static function get_image_dimensions_for_src( string $src, int $attachment_id ): ?array {
+            if ( ! function_exists( 'wp_get_attachment_metadata' ) ) {
+                return null;
+            }
+            $meta = wp_get_attachment_metadata( $attachment_id );
+            if ( ! is_array( $meta ) ) {
+                return null;
+            }
+
+            $path = function_exists( 'wp_parse_url' ) ? wp_parse_url( $src, PHP_URL_PATH ) : parse_url( $src, PHP_URL_PATH );
+            if ( ! is_string( $path ) || '' === $path ) {
+                return null;
+            }
+            $src_path = $path;
+
+            if ( function_exists( 'wp_image_src_get_dimensions' ) ) {
+                $dims = wp_image_src_get_dimensions( $src_path, $meta, $attachment_id );
+                if ( is_array( $dims ) && ! empty( $dims[0] ) && ! empty( $dims[1] ) ) {
+                    return [ (int) $dims[0], (int) $dims[1] ];
+                }
+                return null;
+            }
+
+            // Fallback: match file names ourselves.
+            $file = basename( $src_path );
+            if ( ! empty( $meta['file'] ) && is_string( $meta['file'] ) && basename( $meta['file'] ) === $file
+                && ! empty( $meta['width'] ) && ! empty( $meta['height'] ) ) {
+                return [ (int) $meta['width'], (int) $meta['height'] ];
+            }
+            if ( ! empty( $meta['sizes'] ) && is_array( $meta['sizes'] ) ) {
+                foreach ( $meta['sizes'] as $size ) {
+                    if ( is_array( $size ) && isset( $size['file'] ) && $size['file'] === $file
+                        && ! empty( $size['width'] ) && ! empty( $size['height'] ) ) {
+                        return [ (int) $size['width'], (int) $size['height'] ];
+                    }
+                }
+            }
+            return null;
         }
 
         /**
