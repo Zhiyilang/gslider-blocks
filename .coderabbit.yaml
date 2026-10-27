@@ -29,6 +29,8 @@ reviews:
     - "!node_modules/**"
     - "!packages/*/dist/**"
     - "!packages/*/node_modules/**"
+    - "!assets/admin/css/**"
+    - "!assets/admin/js/**"
     - "!**/*.min.*"
     - "!**/*.bundle.js"
     - "!**/*.asset.php"
@@ -55,7 +57,8 @@ reviews:
         - Responsive Architecture (Rule 5): All visual and layout controls must support responsive objects: `{ Desktop, Tablet, Mobile }`.
         - Design System Controls (Rule 8): Blocks must exclusively use approved `@Components/*` controls. Raw `@wordpress/components` input controls inside block inspectors are forbidden.
         - Build Verification:
-          * If `styling.js` is changed: remind the author to run `npm run mcp:build` and commit the bundle. Do not judge whether `packages/mcp-server/dist/` was committed (it is path-filtered); the "Block Build & MCP Drift Check" CI job is the source of truth.
+          * If block source files are changed: remind the author to run `npm run build` and commit the updated `build/` output.
+          * If MCP bundle inputs (`styling.js`, `attributes.js`, `save.js`, `deprecated.js`, `block.json`) are changed: remind the author to run `npm run mcp:build` and commit the bundle. Do not judge whether `packages/mcp-server/dist/` was committed (it is path-filtered); the "Block Build & MCP Drift Check" CI job is the source of truth.
           * If `attributes.js` is changed: remind the author to run `npm run defaults:generate` and commit any updated defaults in `includes/RestApi/defaults/`. Also verify if a `deprecated.js` migration is needed to prevent live block invalidation.
 
     # 4. Block Attributes Schema Standards
@@ -89,6 +92,7 @@ reviews:
       instructions: |
         - Design Tokens (Rule 10): Never hardcode raw hex color codes or font families directly in dashboard SCSS.
         - All dashboard tokens must be imported from `admin/scss/dashboard/_variables.scss` (`@use 'variables' as *;`).
+        - Build Verification: When dashboard SCSS changes, remind the author to run `npm run admin:build` and verify that generated CSS output under `assets/admin/css/` is updated for inclusion in the release archive.
 
 knowledge_base:
   code_guidelines:
