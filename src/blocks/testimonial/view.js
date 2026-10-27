@@ -1,4 +1,5 @@
 /* global Swiper */
+/* eslint-disable no-console */
 document.addEventListener( 'DOMContentLoaded', () => {
 	const initializeSliders = () => {
 		// Select all slider containers
