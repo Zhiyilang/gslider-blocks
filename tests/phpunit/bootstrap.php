@@ -644,19 +644,25 @@ if ( ! function_exists( 'doing_action' ) ) {
 
 if ( ! function_exists( 'parse_blocks' ) ) {
 	function parse_blocks( $content ) {
-		if ( false !== strpos( $content, 'wp:gslider-blocks/image-slider' ) ) {
-			return [
-				[
-					'blockName'   => 'gslider-blocks/image-slider',
-					'attrs'       => [
-						'blockId'    => 'slider-abc123',
-						'blockStyle' => '.slider-abc123 { border-radius: 8px; }',
-					],
-					'innerBlocks' => [],
-				],
+		$blocks = [];
+		if ( false !== strpos( $content, 'wp:block' ) ) {
+			$blocks[] = [
+				'blockName'   => 'core/block',
+				'attrs'       => [ 'ref' => 42 ],
+				'innerBlocks' => [],
 			];
 		}
-		return [];
+		if ( false !== strpos( $content, 'wp:gslider-blocks/image-slider' ) ) {
+			$blocks[] = [
+				'blockName'   => 'gslider-blocks/image-slider',
+				'attrs'       => [
+					'blockId'    => 'slider-abc123',
+					'blockStyle' => '.slider-abc123 { border-radius: 8px; }',
+				],
+				'innerBlocks' => [],
+			];
+		}
+		return $blocks;
 	}
 }
 

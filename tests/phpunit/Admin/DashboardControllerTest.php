@@ -470,6 +470,22 @@ class DashboardControllerTest {
 		}
 		echo "OK: System report displays external generated stylesheet label when file delivery enabled\n";
 
+		// 5. Partial update: submitting only google_fonts_privacy must not reset css_delivery.
+		$request_partial = new WP_REST_Request( 'POST', '/gslider/v1/settings' );
+		$request_partial->set_param( 'google_fonts_privacy', true );
+		$response_partial = $controller->save_settings( $request_partial );
+		$data_partial     = $response_partial->get_data();
+
+		if ( 'file' !== $data_partial['settings']['css_delivery'] ) {
+			fwrite( STDERR, "FAIL: Partial POST of google_fonts_privacy reset css_delivery to " . $data_partial['settings']['css_delivery'] . "\n" );
+			exit( 1 );
+		}
+		if ( true !== $data_partial['settings']['google_fonts_privacy'] ) {
+			fwrite( STDERR, "FAIL: google_fonts_privacy was not set to true\n" );
+			exit( 1 );
+		}
+		echo "OK: Partial settings update preserves existing unpassed settings\n";
+
 		delete_option( 'gslider_settings' );
 	}
 

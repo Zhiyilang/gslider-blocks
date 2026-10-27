@@ -152,12 +152,16 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
         /**
          * Recursively parses blocks to pre-enqueue dynamic CSS files for GSlider blocks (#314).
          *
+         * Resolves inner blocks and core/block (synced patterns) to ensure sliders embedded
+         * within synced patterns are also pre-enqueued into <head> on classic themes.
+         *
          * @since 1.2.1
          *
          * @param array<int, array<string, mixed>> $blocks Parsed blocks array.
+         * @param array<int, bool>                 $visited_refs Visited synced pattern post IDs for recursion protection.
          * @return void
          */
-        private function collect_styles_from_block_list( array $blocks ): void {
+        private function collect_styles_from_block_list( array $blocks, array &$visited_refs = [] ): void {
             foreach ( $blocks as $block ) {
                 if ( ! empty( $block['blockName'] ) && false !== strpos( $block['blockName'], 'gslider-blocks/' ) ) {
                     if ( ! empty( $block['attrs']['blockStyle'] ) ) {
@@ -175,8 +179,25 @@ if ( ! class_exists( StyleGenerator::class, false ) ) {
                     }
                 }
 
+                // Follow core/block (synced patterns / reusable blocks) to pre-enqueue nested sliders.
+                if ( ! empty( $block['blockName'] ) && 'core/block' === $block['blockName'] && ! empty( $block['attrs']['ref'] ) ) {
+                    $ref_id = (int) $block['attrs']['ref'];
+                    if ( $ref_id > 0 && empty( $visited_refs[ $ref_id ] ) && function_exists( 'get_post' ) && function_exists( 'parse_blocks' ) ) {
+                        $visited_refs[ $ref_id ] = true;
+                        $ref_post = get_post( $ref_id );
+                        if ( $ref_post && ! empty( $ref_post->post_content ) && is_string( $ref_post->post_content ) ) {
+                            if ( false !== strpos( $ref_post->post_content, '<!-- wp:gslider-blocks/' ) ) {
+                                $ref_blocks = parse_blocks( $ref_post->post_content );
+                                if ( ! empty( $ref_blocks ) && is_array( $ref_blocks ) ) {
+                                    $this->collect_styles_from_block_list( $ref_blocks, $visited_refs );
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if ( ! empty( $block['innerBlocks'] ) && is_array( $block['innerBlocks'] ) ) {
-                    $this->collect_styles_from_block_list( $block['innerBlocks'] );
+                    $this->collect_styles_from_block_list( $block['innerBlocks'], $visited_refs );
                 }
             }
         }

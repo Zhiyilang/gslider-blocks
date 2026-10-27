@@ -801,6 +801,31 @@ class StyleGeneratorTest {
 		}
 		echo "OK: Classic theme pre-collection parses queried post and enqueues stylesheet early for <head>\n";
 
+		// Also verify synced patterns (core/block with ref) are followed and pre-enqueued.
+		global $wp_mock_posts;
+		$synced_post               = new WP_Post();
+		$synced_post->ID           = 42;
+		$synced_post->post_status  = 'publish';
+		$synced_post->post_type    = 'wp_block';
+		$synced_post->post_title   = 'Synced Slider Pattern';
+		$synced_post->post_content = '<!-- wp:gslider-blocks/image-slider {"blockId":"slider-abc123"} /-->';
+		$wp_mock_posts[42]         = $synced_post;
+
+		StyleGenerator::reset_styles();
+		$generator->clear_dynamic_css_cache();
+		$enqueued_styles = [];
+
+		// Post containing only the synced pattern ref and GSlider block marker.
+		$wp_post_content = '<!-- wp:gslider-blocks/pattern-wrapper --> <!-- wp:block {"ref":42} /-->';
+		$generator->pre_collect_queried_post_styles();
+
+		if ( empty( $enqueued_styles[ $handle ] ) ) {
+			fwrite( STDERR, "FAIL: Synced pattern pre-collection did not enqueue stylesheet for block inside core/block\n" );
+			exit( 1 );
+		}
+		echo "OK: Classic theme pre-collection resolves core/block synced patterns and enqueues stylesheets\n";
+
+		unset( $wp_mock_posts[42] );
 		$generator->clear_dynamic_css_cache();
 		delete_option( 'gslider_settings' );
 	}
